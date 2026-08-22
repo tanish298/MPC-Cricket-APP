@@ -44,6 +44,109 @@ create policy "Logged-in users can update" on kv_store
 4. Go to **Project Settings → API**. Copy the **Project URL** and the
    **anon public key** — you'll need both in step 3 below.
 
+### Admin / Scorer / Viewer roles
+
+> Already ran the earlier two-tier (Scorer/Viewer) setup? Skip the
+> `create table app_roles` line below (it already exists) and just run
+> the rest — the new policies and the `profiles` table.
+
+There are three levels of access:
+
+- **Admin** (you) — everything, plus: delete matches/tournaments, fix a
+  match's overs if entered wrong, and decide who's a Scorer or Admin
+- **Scorer** — can start matches and do all the live ball-by-ball scoring
+- **Viewer** — everyone else by default. Can watch live matches and browse
+  teams/stats/scorecards, but can't touch anything
+
+Run this once, in the same SQL Editor:
+
+```sql
+-- Roles table
+create table app_roles (
+  email text primary key,
+  role text not null default 'viewer'
+);
+alter table app_roles enable row level security;
+
+create policy "Logged-in users can read roles" on app_roles
+  for select using (auth.role() = 'authenticated');
+
+-- Only admins can grant/change roles (checked against this same table)
+create policy "Admins can add roles" on app_roles
+  for insert with check (
+    exists (select 1 from app_roles where email = auth.email() and role = 'admin')
+  );
+create policy "Admins can change roles" on app_roles
+  for update using (
+    exists (select 1 from app_roles where email = auth.email() and role = 'admin')
+  );
+
+> Already created the `profiles` table from an earlier version (without
+> `player_name`)? Run this one line instead of recreating the table:
+> `alter table profiles add column player_name text;` — then still add the
+> new "Users can update their own profile" policy above if you don't have it.
+
+-- A public, safe list of who has signed up, so an admin can assign roles
+-- to real people rather than typing emails from memory. player_name lets
+-- each person link their login to a name in the player roster, so they
+-- can see their own career stats.
+create table profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  email text unique,
+  player_name text
+);
+alter table profiles enable row level security;
+
+create policy "Logged-in users can read the signup list" on profiles
+  for select using (auth.role() = 'authenticated');
+create policy "Users can create their own profile" on profiles
+  for insert with check (auth.uid() = id);
+create policy "Users can update their own profile" on profiles
+  for update using (auth.uid() = id);
+
+-- Replace the earlier open write policies on kv_store with these,
+-- which only let Scorers and Admins write to the "matches" key. Team/
+-- tournament/player-pool data stays editable by anyone signed in.
+drop policy if exists "Logged-in users can write" on kv_store;
+drop policy if exists "Logged-in users can update" on kv_store;
+
+create policy "Scorers and admins can write match data, others write the rest" on kv_store
+  for insert with check (
+    key <> 'matches' OR exists (
+      select 1 from app_roles where email = auth.email() and role in ('scorer', 'admin')
+    )
+  );
+
+create policy "Scorers and admins can update match data, others update the rest" on kv_store
+  for update using (
+    key <> 'matches' OR exists (
+      select 1 from app_roles where email = auth.email() and role in ('scorer', 'admin')
+    )
+  );
+```
+
+> **Important — do this immediately after running the SQL above, before
+> anyone scores a match:** the `app_roles` table starts empty, so
+> *everyone* — including you — starts out as a Viewer. Go to
+> **Table Editor → app_roles → Insert row** in the Supabase dashboard and
+> add your own sign-up email with role **`admin`**. This is the one and
+> only role you'll ever need to set by hand — from here on, you manage
+> everyone else's role from inside the app itself (Home → Manage Access,
+> visible only to admins).
+
+**One honest limitation to know about:** the app's match data is stored as
+one big block per key (not one database row per match), so Postgres can
+tell the difference between "a viewer trying to write" (blocked) and "a
+scorer or admin trying to write" (allowed) — but it can't tell the
+difference between a scorer *scoring* a match versus a scorer *deleting*
+one, since both are technically the same kind of write. The Admin-only
+delete/edit-overs/manage-roles controls are enforced in the app's
+interface, not the database. For a small trusted group this is a
+reasonable tradeoff — everyone still needs your invite code and a scorer
+role to touch anything at all — but a determined scorer could technically
+bypass the interface. Let me know if you ever want this hardened further.
+
+
 ### Keeping strangers off your sign-up page
 
 The app has an **invite code** gate on sign-up: pick any word/phrase, put it

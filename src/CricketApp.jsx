@@ -522,9 +522,38 @@ function Modal({ title, onClose, children }) {
   );
 }
 
+function ConfirmModal({ title, message, confirmLabel = "Delete", onConfirm, onCancel }) {
+  return (
+    <Modal title={title} onClose={onCancel}>
+      <div className="f-ui text-sm mb-4" style={{ color: C.inkSoft }}>{message}</div>
+      <div className="flex gap-2">
+        <Btn variant="ghost" className="flex-1 text-center" onClick={onCancel}>Cancel</Btn>
+        <Btn variant="danger" className="flex-1 text-center" onClick={onConfirm}>{confirmLabel}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 /* ---------------------------------- HOME ---------------------------------- */
 
-function HomeScreen({ teams, matches, tournaments, go, onLogout, userEmail }) {
+function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, userEmail, deleteMatch, isScorer, isAdmin, supabaseClient, linkedPlayerName, setLinkedPlayerName }) {
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [assignedRoles, setAssignedRoles] = useState([]);
+  const [namePicker, setNamePicker] = useState(false);
+  const [customName, setCustomName] = useState("");
+  const [showMyProfile, setShowMyProfile] = useState(false);
+
+  useEffect(() => {
+    if (!isAdmin || !supabaseClient) return;
+    supabaseClient.from("app_roles").select("email, role").in("role", ["scorer", "admin"]).then(({ data }) => {
+      if (data) setAssignedRoles(data);
+    });
+  }, [isAdmin, supabaseClient]);
+
+  const myCareer = linkedPlayerName
+    ? computeCareerStats(matches, teams, null).players.find((p) => p.key === linkedPlayerName.trim().toLowerCase())
+    : null;
+
   const liveMatches = matches.filter((m) => m.status === "live");
   const recent = matches.filter((m) => m.status === "completed").slice(-5).reverse();
   const teamName = (id) => teams.find((t) => t.id === id)?.name || "Unknown";
@@ -543,22 +572,98 @@ function HomeScreen({ teams, matches, tournaments, go, onLogout, userEmail }) {
             <div className="f-ui text-white/70 text-sm mt-1">Teams, tournaments, and ball-by-ball scoring.</div>
           </div>
           {onLogout && (
-            <button onClick={onLogout} className="f-ui text-[11px] text-white/70 border border-white/30 rounded-md px-2.5 py-1.5 mt-1 stamp-btn" title={userEmail || ""}>
-              Log out
-            </button>
+            <div className="text-right">
+              <button onClick={onLogout} className="f-ui text-[11px] text-white/70 border border-white/30 rounded-md px-2.5 py-1.5 mt-1 stamp-btn" title={userEmail || ""}>
+                Log out
+              </button>
+              <div className="f-ui text-[10px] mt-1" style={{ color: isScorer ? "#D8B56A" : "rgba(255,255,255,0.5)" }}>{isScorer ? "Scorer" : "Viewer"}</div>
+            </div>
           )}
         </div>
       </div>
 
       <div className="px-4 -mt-4">
-        <button onClick={() => { go.setPresetCategory(null); go("newMatch"); }} className="w-full rounded-xl p-4 flex items-center justify-between shadow-md stamp-btn" style={{ background: C.ball, color: "#fff" }}>
-          <div className="flex items-center gap-3">
-            <Play size={20} />
-            <span className="f-display text-lg">New Match</span>
+        {isScorer ? (
+          <button onClick={() => { go.setPresetCategory(null); go("newMatch"); }} className="w-full rounded-xl p-4 flex items-center justify-between shadow-md stamp-btn" style={{ background: C.ball, color: "#fff" }}>
+            <div className="flex items-center gap-3">
+              <Play size={20} />
+              <span className="f-display text-lg">New Match</span>
+            </div>
+            <ChevronRight size={18} />
+          </button>
+        ) : (
+          <div className="w-full rounded-xl p-4 f-ui text-sm text-center" style={{ background: C.paper, border: `1.5px solid ${C.line}`, color: C.inkSoft }}>
+            You're a viewer — you can watch live matches and browse stats, but only a scorer can start or record a match.
           </div>
-          <ChevronRight size={18} />
-        </button>
+        )}
       </div>
+
+      <div className="px-4 mt-3">
+        {!linkedPlayerName ? (
+          <button onClick={() => setNamePicker(true)} className="w-full rounded-xl p-3.5 flex items-center gap-3 stamp-btn" style={{ background: C.paper, border: `1.5px dashed ${C.line}` }}>
+            <Users size={17} style={{ color: C.pitch }} />
+            <div className="flex-1 text-left">
+              <div className="f-ui text-sm font-semibold" style={{ color: C.ink }}>Set up your player profile</div>
+              <div className="f-ui text-[11px]" style={{ color: C.inkSoft }}>Link your name to see your own career stats</div>
+            </div>
+            <ChevronRight size={15} style={{ color: C.inkSoft }} />
+          </button>
+        ) : (
+          <div className="rounded-xl p-3.5" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="f-ui text-xs font-bold uppercase tracking-wide" style={{ color: C.inkSoft }}>My Profile</div>
+              <button onClick={() => { setCustomName(linkedPlayerName); setNamePicker(true); }} className="f-ui text-[11px]" style={{ color: C.pitch }}>Change</button>
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="f-display text-base" style={{ color: C.ink }}>{linkedPlayerName}</div>
+              {myCareer ? (
+                <button onClick={() => setShowMyProfile(true)} className="f-ui text-xs font-semibold stamp-btn" style={{ color: C.pitch }}>View Stats</button>
+              ) : (
+                <span className="f-ui text-xs" style={{ color: C.inkSoft }}>No matches recorded yet</span>
+              )}
+            </div>
+            {myCareer && (
+              <div className="grid grid-cols-3 gap-2 mt-2 f-mono text-xs">
+                <div className="rounded-md p-2 text-center" style={{ background: C.cream }}>
+                  <div className="font-bold" style={{ color: C.pitch }}>{myCareer.batting.runs}</div>
+                  <div className="f-ui text-[10px]" style={{ color: C.inkSoft }}>Runs</div>
+                </div>
+                <div className="rounded-md p-2 text-center" style={{ background: C.cream }}>
+                  <div className="font-bold" style={{ color: C.ball }}>{myCareer.bowling.wickets}</div>
+                  <div className="f-ui text-[10px]" style={{ color: C.inkSoft }}>Wickets</div>
+                </div>
+                <div className="rounded-md p-2 text-center" style={{ background: C.cream }}>
+                  <div className="font-bold" style={{ color: C.gold }}>{myCareer.fieldingTotal}</div>
+                  <div className="f-ui text-[10px]" style={{ color: C.inkSoft }}>Dismissals</div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {namePicker && (
+        <Modal title="Which name is you?" onClose={() => setNamePicker(false)}>
+          <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>Pick your name from the regular players list, or type it exactly as it's entered on your team's roster.</div>
+          <div className="space-y-1.5 mb-4" style={{ maxHeight: "40vh", overflowY: "auto" }}>
+            {playerPool.map((p) => (
+              <button key={p.id} onClick={() => { setLinkedPlayerName(p.name); setNamePicker(false); }}
+                className="w-full text-left f-ui text-sm px-3 py-2 rounded-md stamp-btn"
+                style={{ background: linkedPlayerName === p.name ? C.pitch : C.paper, color: linkedPlayerName === p.name ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+                {p.name}
+              </button>
+            ))}
+          </div>
+          <Field label="Not in the list? Type it exactly as scored">
+            <TextInput value={customName} onChange={(e) => setCustomName(e.target.value)} placeholder="Full name" />
+          </Field>
+          <Btn className="w-full" disabled={!customName.trim()} onClick={() => { setLinkedPlayerName(customName.trim()); setNamePicker(false); }}>Save</Btn>
+        </Modal>
+      )}
+
+      {showMyProfile && myCareer && (
+        <PlayerDetailModal stats={myCareer} onClose={() => setShowMyProfile(false)} />
+      )}
 
       {liveMatches.length > 0 && (
         <div className="px-4 mt-4">
@@ -629,23 +734,50 @@ function HomeScreen({ teams, matches, tournaments, go, onLogout, userEmail }) {
         </button>
       </div>
 
+      {isAdmin && (
+        <div className="px-4 mt-4">
+          <button onClick={() => go("manageAccess")} className="w-full rounded-xl p-3.5 stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="f-ui text-sm font-semibold flex items-center gap-2" style={{ color: C.ink }}><Shield size={15} style={{ color: C.gold }} /> Manage Access</span>
+              <ChevronRight size={15} style={{ color: C.inkSoft }} />
+            </div>
+            {assignedRoles.length === 0 ? (
+              <div className="f-ui text-xs" style={{ color: C.inkSoft }}>No scorers assigned yet.</div>
+            ) : (
+              <div className="f-ui text-xs" style={{ color: C.inkSoft }}>
+                {assignedRoles.map((r) => `${r.email} (${r.role})`).join(" · ")}
+              </div>
+            )}
+          </button>
+        </div>
+      )}
+
       {recent.length > 0 && (
         <div className="px-4 mt-5 pb-8">
           <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Recent Results</div>
           <div className="rounded-xl overflow-hidden ledger-edge" style={{ background: C.paper }}>
             {recent.map((m, i) => (
-              <button key={m.id} onClick={() => { go("summary"); go.setMatch(m.id); }}
-                className="w-full text-left px-4 py-3 flex items-center justify-between stamp-btn"
-                style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
-                <div>
+              <div key={m.id} className="w-full flex items-center justify-between" style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
+                <button onClick={() => { go("summary"); go.setMatch(m.id); }} className="flex-1 text-left px-4 py-3 stamp-btn">
                   <div className="f-ui text-sm font-medium" style={{ color: C.ink }}>{teamName(m.teamAId)} vs {teamName(m.teamBId)}</div>
                   <div className="f-ui text-xs mt-0.5" style={{ color: C.inkSoft }}>{m.result?.text}</div>
-                </div>
-                <ChevronRight size={16} style={{ color: C.inkSoft }} />
-              </button>
+                </button>
+                {deleteMatch && (
+                  <button onClick={() => setConfirmDeleteId(m.id)} className="px-3 py-3"><X size={14} style={{ color: C.inkSoft }} /></button>
+                )}
+              </div>
             ))}
           </div>
         </div>
+      )}
+
+      {confirmDeleteId && (
+        <ConfirmModal
+          title="Delete Match"
+          message="This permanently removes the match and its scorecard. This can't be undone."
+          onCancel={() => setConfirmDeleteId(null)}
+          onConfirm={() => { deleteMatch(confirmDeleteId); setConfirmDeleteId(null); }}
+        />
       )}
     </div>
   );
@@ -864,6 +996,75 @@ function PlayerStatsScreen({ matches, teams, go }) {
   );
 }
 
+/* ---------------------------------- MANAGE ACCESS (admin only) ---------------------------------- */
+
+function ManageAccessScreen({ supabaseClient, userEmail, go }) {
+  const [people, setPeople] = useState(null); // null = loading
+  const [error, setError] = useState(null);
+  const [savingEmail, setSavingEmail] = useState(null);
+
+  const load = async () => {
+    setError(null);
+    try {
+      const [{ data: profiles, error: pErr }, { data: roles, error: rErr }] = await Promise.all([
+        supabaseClient.from("profiles").select("id, email"),
+        supabaseClient.from("app_roles").select("email, role"),
+      ]);
+      if (pErr || rErr) { setError((pErr || rErr).message); return; }
+      const roleByEmail = {};
+      (roles || []).forEach((r) => { roleByEmail[r.email] = r.role; });
+      const merged = (profiles || [])
+        .map((p) => ({ email: p.email, role: roleByEmail[p.email] || "viewer" }))
+        .sort((a, b) => a.email.localeCompare(b.email));
+      setPeople(merged);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const setRole = async (email, role) => {
+    setSavingEmail(email);
+    const { error: err } = await supabaseClient.from("app_roles").upsert({ email, role }, { onConflict: "email" });
+    setSavingEmail(null);
+    if (err) { setError(err.message); return; }
+    setPeople((ps) => ps.map((p) => p.email === email ? { ...p, role } : p));
+  };
+
+  return (
+    <div className="min-h-full pb-8" style={{ background: C.cream }}>
+      <TopBar title="Manage Access" onBack={() => go("home")} />
+      <div className="p-4">
+        <div className="f-ui text-xs mb-4" style={{ color: C.inkSoft }}>
+          Everyone who has signed up shows up here. Set who can score matches and who else should have full admin control. New sign-ups start as Viewers automatically.
+        </div>
+        {error && <div className="f-ui text-xs mb-3 px-3 py-2 rounded-md" style={{ background: C.ball + "22", color: C.inkSoft }}>{error}</div>}
+        {people === null && <div className="f-ui text-sm" style={{ color: C.inkSoft }}>Loading…</div>}
+        {people && people.length === 0 && <div className="f-ui text-sm" style={{ color: C.inkSoft }}>Nobody's signed up yet.</div>}
+        <div className="space-y-2">
+          {people && people.map((p) => (
+            <div key={p.email} className="rounded-xl p-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+              <div className="f-ui text-sm mb-2 truncate" style={{ color: C.ink }}>
+                {p.email}{p.email === userEmail && <span className="f-ui text-[10px] ml-2 px-1.5 py-0.5 rounded" style={{ background: C.gold + "33", color: C.gold }}>you</span>}
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {["viewer", "scorer", "admin"].map((r) => (
+                  <button key={r} disabled={savingEmail === p.email} onClick={() => setRole(p.email, r)}
+                    className="f-ui text-xs py-1.5 rounded-md capitalize stamp-btn disabled:opacity-50"
+                    style={{ background: p.role === r ? C.pitch : C.cream, color: p.role === r ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------- TEAMS ---------------------------------- */
 
 function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
@@ -1056,11 +1257,13 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
 
 /* ---------------------------------- TOURNAMENTS ---------------------------------- */
 
-function TournamentsScreen({ teams, tournaments, setTournaments, matches, go }) {
+function TournamentsScreen({ teams, tournaments, setTournaments, matches, deleteTournament, deleteMatch, go }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [selTeams, setSelTeams] = useState([]);
   const [openId, setOpenId] = useState(null);
+  const [confirmDeleteMatchId, setConfirmDeleteMatchId] = useState(null);
+  const [confirmDeleteTournament, setConfirmDeleteTournament] = useState(false);
 
   const create = () => {
     if (!name.trim() || selTeams.length < 2) return;
@@ -1112,17 +1315,39 @@ function TournamentsScreen({ teams, tournaments, setTournaments, matches, go }) 
           <div className="f-ui text-xs font-bold uppercase tracking-wide mt-5 mb-2" style={{ color: C.inkSoft }}>Matches</div>
           <div className="space-y-2">
             {matches.filter((m) => m.tournamentId === open.id).map((m) => (
-              <button key={m.id} onClick={() => { if (m.status === "completed") { go("summary"); go.setMatch(m.id); } else { go("live"); go.setMatch(m.id); } }}
-                className="w-full text-left p-3 rounded-lg stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
-                <div className="f-ui text-sm" style={{ color: C.ink }}>{teams.find(t=>t.id===m.teamAId)?.name} vs {teams.find(t=>t.id===m.teamBId)?.name}</div>
-                <div className="f-ui text-xs mt-0.5" style={{ color: m.status === "live" ? C.ball : C.inkSoft }}>{m.status === "live" ? "● Live now" : m.result?.text}</div>
-              </button>
+              <div key={m.id} className="flex items-center gap-2">
+                <button onClick={() => { if (m.status === "completed") { go("summary"); go.setMatch(m.id); } else { go("live"); go.setMatch(m.id); } }}
+                  className="flex-1 text-left p-3 rounded-lg stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+                  <div className="f-ui text-sm" style={{ color: C.ink }}>{teams.find(t=>t.id===m.teamAId)?.name} vs {teams.find(t=>t.id===m.teamBId)?.name}</div>
+                  <div className="f-ui text-xs mt-0.5" style={{ color: m.status === "live" ? C.ball : C.inkSoft }}>{m.status === "live" ? "● Live now" : m.result?.text}</div>
+                </button>
+                {deleteMatch && <button onClick={() => setConfirmDeleteMatchId(m.id)} className="p-2"><X size={14} style={{ color: C.inkSoft }} /></button>}
+              </div>
             ))}
             {matches.filter((m) => m.tournamentId === open.id).length === 0 && (
               <div className="f-ui text-xs" style={{ color: C.inkSoft }}>No matches yet. Start one from New Match and pick this tournament.</div>
             )}
           </div>
+
+          {deleteTournament && <button onClick={() => setConfirmDeleteTournament(true)} className="f-ui text-xs mt-6" style={{ color: C.ball }}>Delete tournament</button>}
         </div>
+
+        {confirmDeleteMatchId && (
+          <ConfirmModal
+            title="Delete Match"
+            message="This permanently removes the match and its scorecard. This can't be undone."
+            onCancel={() => setConfirmDeleteMatchId(null)}
+            onConfirm={() => { deleteMatch(confirmDeleteMatchId); setConfirmDeleteMatchId(null); }}
+          />
+        )}
+        {confirmDeleteTournament && (
+          <ConfirmModal
+            title="Delete Tournament"
+            message="This deletes the tournament itself. Its matches stay in your match history, just no longer grouped under it."
+            onCancel={() => setConfirmDeleteTournament(false)}
+            onConfirm={() => { deleteTournament(open.id); setConfirmDeleteTournament(false); setOpenId(null); }}
+          />
+        )}
       </div>
     );
   }
@@ -1171,10 +1396,11 @@ function TournamentsScreen({ teams, tournaments, setTournaments, matches, go }) 
 
 /* ---------------------------------- WEEKLY CRICKET ---------------------------------- */
 
-function WeeklyScreen({ teams, matches, startScheduledMatch, go }) {
+function WeeklyScreen({ teams, matches, startScheduledMatch, deleteMatch, isScorer, go }) {
   const [tossPickId, setTossPickId] = useState(null);
   const [tossWinner, setTossWinner] = useState("");
   const [tossChoice, setTossChoice] = useState("bat");
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const weekly = matches.filter((m) => m.category === "weekly").sort((a, b) => (a.matchDate || "") < (b.matchDate || "") ? 1 : -1);
   const teamName = (id) => teams.find((t) => t.id === id)?.name || "Unknown";
@@ -1192,17 +1418,22 @@ function WeeklyScreen({ teams, matches, startScheduledMatch, go }) {
   return (
     <div className="min-h-full pb-8" style={{ background: C.cream }}>
       <TopBar title="Weekly Cricket" onBack={() => go("home")} right={
-        <button onClick={() => { go("newMatch"); go.setPresetCategory("weekly"); }} className="text-white"><Plus size={20} /></button>
+        isScorer && (
+          <button onClick={() => { go("newMatch"); go.setPresetCategory("weekly"); }} className="text-white"><Plus size={20} /></button>
+        )
       } />
       <div className="p-4 space-y-2">
         {weekly.length === 0 && (
-          <div className="text-center py-10 f-ui text-sm" style={{ color: C.inkSoft }}>No weekend fixtures yet — tap + to schedule one.</div>
+          <div className="text-center py-10 f-ui text-sm" style={{ color: C.inkSoft }}>No weekend fixtures yet{isScorer ? " — tap + to schedule one." : "."}</div>
         )}
         {weekly.map((m) => (
           <div key={m.id} className="rounded-xl p-4" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
             <div className="flex items-center justify-between mb-1">
               <span className="f-ui text-xs font-bold uppercase tracking-wide" style={{ color: C.gold }}>{m.weekday}{m.matchDate ? ` · ${fmtDate(m.matchDate)}` : ""}</span>
-              {m.status === "live" && <span className="f-ui text-xs font-bold" style={{ color: C.ball }}>● LIVE</span>}
+              <div className="flex items-center gap-2">
+                {m.status === "live" && <span className="f-ui text-xs font-bold" style={{ color: C.ball }}>● LIVE</span>}
+                {deleteMatch && <button onClick={() => setConfirmDeleteId(m.id)}><X size={14} style={{ color: C.inkSoft }} /></button>}
+              </div>
             </div>
             <div className="f-display text-base" style={{ color: C.ink }}>{teamName(m.teamAId)} vs {teamName(m.teamBId)}</div>
             {m.venue && (
@@ -1212,10 +1443,11 @@ function WeeklyScreen({ teams, matches, startScheduledMatch, go }) {
             )}
             <div className="mt-3">
               {m.status === "scheduled" && (
-                <Btn size="sm" onClick={() => { setTossPickId(m.id); setTossWinner(""); setTossChoice("bat"); }}>Start Match</Btn>
+                isScorer ? <Btn size="sm" onClick={() => { setTossPickId(m.id); setTossWinner(""); setTossChoice("bat"); }}>Start Match</Btn>
+                  : <span className="f-ui text-xs" style={{ color: C.inkSoft }}>Waiting for a scorer to start this match</span>
               )}
               {m.status === "live" && (
-                <Btn size="sm" onClick={() => { go("live"); go.setMatch(m.id); }}>Resume Scoring</Btn>
+                <Btn size="sm" onClick={() => { go("live"); go.setMatch(m.id); }}>{isScorer ? "Resume Scoring" : "Watch Live"}</Btn>
               )}
               {m.status === "completed" && (
                 <button onClick={() => { go("summary"); go.setMatch(m.id); }} className="f-ui text-xs font-semibold" style={{ color: C.pitch }}>
@@ -1226,6 +1458,15 @@ function WeeklyScreen({ teams, matches, startScheduledMatch, go }) {
           </div>
         ))}
       </div>
+
+      {confirmDeleteId && (
+        <ConfirmModal
+          title="Delete Fixture"
+          message="This permanently removes the fixture and any scoring data on it. This can't be undone."
+          onCancel={() => setConfirmDeleteId(null)}
+          onConfirm={() => { deleteMatch(confirmDeleteId); setConfirmDeleteId(null); }}
+        />
+      )}
 
       {tossMatch && (
         <Modal title="Toss" onClose={() => setTossPickId(null)}>
@@ -1257,7 +1498,15 @@ function WeeklyScreen({ teams, matches, startScheduledMatch, go }) {
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, go }) {
+function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isScorer, go }) {
+  if (!isScorer) {
+    return (
+      <div className="min-h-full" style={{ background: C.cream }}>
+        <TopBar title="New Match" onBack={() => go("home")} />
+        <div className="p-8 text-center f-ui text-sm" style={{ color: C.inkSoft }}>Only scorers can start a match. Ask whoever manages the app to make you a scorer if this seems wrong.</div>
+      </div>
+    );
+  }
   const [category, setCategory] = useState(presetCategory || "standalone");
   const [tournamentId, setTournamentId] = useState("");
   const [weekday, setWeekday] = useState("Saturday");
@@ -1403,7 +1652,9 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, go })
 
 /* ---------------------------------- LIVE SCORING ---------------------------------- */
 
-function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, go }) {
+function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, deleteMatch, updateMatchOvers, isScorer, go }) {
+  const [editOversModal, setEditOversModal] = useState(false);
+  const [oversInput, setOversInput] = useState(0);
   const [wicketModal, setWicketModal] = useState(false);
   const [wicketType, setWicketType] = useState("Bowled");
   const [wicketWho, setWicketWho] = useState("striker");
@@ -1415,6 +1666,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
   const [callbackModal, setCallbackModal] = useState(false);
   const [callbackReturning, setCallbackReturning] = useState(null);
   const [extrasModal, setExtrasModal] = useState(false);
+  const [confirmAbandon, setConfirmAbandon] = useState(false);
 
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
 
@@ -1450,6 +1702,14 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
 
   /* --- Openers setup --- */
   if (innings.openers.striker === null) {
+    if (!isScorer) {
+      return (
+        <div className="min-h-full" style={{ background: C.cream }}>
+          <TopBar title={`${battingTeam.name} vs ${bowlingTeam.name}`} onBack={() => go("home")} />
+          <div className="p-8 text-center f-ui text-sm" style={{ color: C.inkSoft }}>Waiting for a scorer to set the openers.</div>
+        </div>
+      );
+    }
     return (
       <OpenersForm
         battingTeam={battingTeam} bowlingTeam={bowlingTeam}
@@ -1484,7 +1744,16 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
 
   return (
     <div className="min-h-full pb-8" style={{ background: C.cream }}>
-      <TopBar title={`${battingTeam.name} vs ${bowlingTeam.name}`} onBack={() => go("home")} />
+      <TopBar title={`${battingTeam.name} vs ${bowlingTeam.name}`} onBack={() => go("home")} right={
+        <div className="flex items-center gap-3">
+          {updateMatchOvers && (
+            <button onClick={() => { setOversInput(match.oversLimit); setEditOversModal(true); }} className="f-ui text-[10px] text-white/80 border border-white/30 rounded px-2 py-1">Edit overs</button>
+          )}
+          {deleteMatch && (
+            <button onClick={() => setConfirmAbandon(true)} className="text-white/80"><X size={18} /></button>
+          )}
+        </div>
+      } />
 
       {/* Scorecard header */}
       <div className="mx-4 mt-4 rounded-xl p-4 ledger-edge" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
@@ -1547,13 +1816,19 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           {" "}(econ {fmtEcon(state.bowlerStats[state.bowler]?.runs || 0, state.bowlerStats[state.bowler]?.balls || 0)})
           {match.maxOversPerBowler && <span> · limit {match.maxOversPerBowler} ov</span>}
         </div>
-        <button onClick={() => setKeeperModal(true)} className="w-full flex items-center justify-between px-3 py-1.5 f-ui text-xs stamp-btn" style={{ borderTop: `1px solid ${C.line}`, color: C.inkSoft }}>
-          <span><Shield size={11} className="inline mr-1" style={{ color: C.gold }} /> Keeper: <span style={{ color: C.ink }}>{effectiveKeeperName || "not set"}</span></span>
-          <span className="font-semibold" style={{ color: C.pitch }}>Change</span>
-        </button>
+        {isScorer ? (
+          <button onClick={() => setKeeperModal(true)} className="w-full flex items-center justify-between px-3 py-1.5 f-ui text-xs stamp-btn" style={{ borderTop: `1px solid ${C.line}`, color: C.inkSoft }}>
+            <span><Shield size={11} className="inline mr-1" style={{ color: C.gold }} /> Keeper: <span style={{ color: C.ink }}>{effectiveKeeperName || "not set"}</span></span>
+            <span className="font-semibold" style={{ color: C.pitch }}>Change</span>
+          </button>
+        ) : (
+          <div className="px-3 py-1.5 f-ui text-xs" style={{ borderTop: `1px solid ${C.line}`, color: C.inkSoft }}>
+            <Shield size={11} className="inline mr-1" style={{ color: C.gold }} /> Keeper: <span style={{ color: C.ink }}>{effectiveKeeperName || "not set"}</span>
+          </div>
+        )}
       </div>
 
-      {keeperModal && (
+      {keeperModal && isScorer && (
         <Modal title="Change wicketkeeper" onClose={() => setKeeperModal(false)}>
           <div className="space-y-1.5">
             {bowlingTeam.players.map((p) => (
@@ -1567,7 +1842,11 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           </div>
         </Modal>
       )}
-      {state.awaitingBatsman ? (
+      {!isScorer ? (
+        <div className="mx-4 mt-3 rounded-xl p-4 text-center" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+          <div className="f-ui text-sm" style={{ color: C.inkSoft }}>You're watching this match live. Only a scorer can record balls.</div>
+        </div>
+      ) : state.awaitingBatsman ? (
         <SelectPrompt title="Select new batsman" options={availableBatsmen} onPick={(id) => {
           const lastVacancy = [...innings.events].reverse().find((e) => (e.type === "ball" && e.wicket) || e.type === "retire");
           const end = lastVacancy?.type === "retire" ? lastVacancy.end : (lastVacancy?.wicket?.who === "nonstriker" ? "nonstriker" : "striker");
@@ -1611,47 +1890,65 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
               className="f-ui text-xs font-bold py-2.5 rounded-lg stamp-btn disabled:opacity-40"
               style={{ background: C.gold, color: "#fff" }}>Call Back{state.retiredPlayers.length > 0 ? ` (${state.retiredPlayers.length})` : ""}</button>
           </div>
-          {(extraPick === "bye" || extraPick === "legbye") && (
-            <div className="flex gap-2 mt-2 items-center flex-wrap">
-              <span className="f-ui text-xs w-full" style={{ color: C.inkSoft }}>Runs run:</span>
-              {[1, 2, 3, 4].map((n) => (
-                <button key={n} onClick={() => { recordBall(0, extraPick, n); setExtraPick(null); }} className="f-mono text-sm w-9 h-9 rounded-full stamp-btn" style={{ background: C.gold + "33", border: `1px solid ${C.line}` }}>{n}</button>
-              ))}
-              <button onClick={() => setExtraPick(null)} className="f-ui text-xs ml-auto" style={{ color: C.inkSoft }}>Cancel</button>
-            </div>
-          )}
-          {extraPick === "overthrow" && (
-            <div className="flex gap-2 mt-2 items-center flex-wrap">
-              <span className="f-ui text-xs w-full" style={{ color: C.inkSoft }}>Total runs off the misfield/overthrow:</span>
-              {[1, 2, 3, 4, 5, 6].map((n) => (
-                <button key={n} onClick={() => { recordBall(0, "overthrow", n); setExtraPick(null); }} className="f-mono text-sm w-9 h-9 rounded-full stamp-btn" style={{ background: C.ball + "33", border: `1px solid ${C.line}` }}>{n}</button>
-              ))}
-              <button onClick={() => setExtraPick(null)} className="f-ui text-xs ml-auto" style={{ color: C.inkSoft }}>Cancel</button>
-            </div>
-          )}
-          {extraPick === "noball" && (
-            <div className="flex gap-2 mt-2 items-center flex-wrap">
-              <span className="f-ui text-xs w-full" style={{ color: C.inkSoft }}>Runs off the bat (plus the automatic 1 no-ball run):</span>
-              {[0, 1, 2, 3, 4, 6].map((n) => (
-                <button key={n} onClick={() => { recordBall(n, "noball", 1); setExtraPick(null); }} className="f-mono text-sm w-9 h-9 rounded-full stamp-btn" style={{ background: C.gold + "33", border: `1px solid ${C.line}` }}>{n}</button>
-              ))}
-              <button onClick={() => setExtraPick(null)} className="f-ui text-xs ml-auto" style={{ color: C.inkSoft }}>Cancel</button>
-            </div>
-          )}
-          {extraPick === "wide" && (
-            <div className="flex gap-2 mt-2 items-center flex-wrap">
-              <span className="f-ui text-xs w-full" style={{ color: C.inkSoft }}>Additional runs run (plus the automatic 1 wide run):</span>
-              {[0, 1, 2, 4].map((n) => (
-                <button key={n} onClick={() => { recordBall(0, "wide", 1 + n); setExtraPick(null); }} className="f-mono text-sm w-9 h-9 rounded-full stamp-btn" style={{ background: C.gold + "33", border: `1px solid ${C.line}` }}>{n}</button>
-              ))}
-              <button onClick={() => setExtraPick(null)} className="f-ui text-xs ml-auto" style={{ color: C.inkSoft }}>Cancel</button>
-            </div>
-          )}
           <button onClick={() => undoLast(idx)} disabled={innings.events.length === 0}
             className="flex items-center gap-1.5 f-ui text-xs mt-4 disabled:opacity-30" style={{ color: C.inkSoft }}>
             <Undo2 size={14} /> Undo last ball
           </button>
         </div>
+      )}
+
+      {extraPick && (
+        <Modal title={
+          extraPick === "wide" ? "Wide" : extraPick === "noball" ? "No Ball" :
+          extraPick === "overthrow" ? "Overthrow" : extraPick === "bye" ? "Bye" : "Leg Bye"
+        } onClose={() => setExtraPick(null)}>
+          {(extraPick === "bye" || extraPick === "legbye") && (
+            <>
+              <div className="f-ui text-sm mb-3" style={{ color: C.inkSoft }}>How many runs did they run?</div>
+              <div className="grid grid-cols-4 gap-2">
+                {[1, 2, 3, 4].map((n) => (
+                  <button key={n} onClick={() => { recordBall(0, extraPick, n); setExtraPick(null); }}
+                    className="f-mono text-lg font-bold py-3 rounded-lg stamp-btn" style={{ background: C.gold + "33", border: `1.5px solid ${C.line}` }}>{n}</button>
+                ))}
+              </div>
+            </>
+          )}
+          {extraPick === "overthrow" && (
+            <>
+              <div className="f-ui text-sm mb-3" style={{ color: C.inkSoft }}>Total runs off the misfield/overthrow:</div>
+              <div className="grid grid-cols-3 gap-2">
+                {[1, 2, 3, 4, 5, 6].map((n) => (
+                  <button key={n} onClick={() => { recordBall(0, "overthrow", n); setExtraPick(null); }}
+                    className="f-mono text-lg font-bold py-3 rounded-lg stamp-btn" style={{ background: C.ball + "33", border: `1.5px solid ${C.line}` }}>{n}</button>
+                ))}
+              </div>
+            </>
+          )}
+          {extraPick === "noball" && (
+            <>
+              <div className="f-ui text-sm mb-3" style={{ color: C.inkSoft }}>Runs off the bat on this no-ball (the automatic +1 no-ball run is added on top):</div>
+              <div className="grid grid-cols-3 gap-2">
+                {[0, 1, 2, 3, 4, 6].map((n) => (
+                  <button key={n} onClick={() => { recordBall(n, "noball", 1); setExtraPick(null); }}
+                    className="f-mono text-lg font-bold py-3 rounded-lg stamp-btn" style={{ background: C.gold + "33", border: `1.5px solid ${C.line}` }}>{n}</button>
+                ))}
+              </div>
+              <div className="f-ui text-xs mt-3" style={{ color: C.inkSoft }}>Tap 0 if the batter didn't score off the bat — the no-ball run is still recorded.</div>
+            </>
+          )}
+          {extraPick === "wide" && (
+            <>
+              <div className="f-ui text-sm mb-3" style={{ color: C.inkSoft }}>Did they run any extra byes on this wide? (the automatic +1 wide run is added on top):</div>
+              <div className="grid grid-cols-4 gap-2">
+                {[0, 1, 2, 4].map((n) => (
+                  <button key={n} onClick={() => { recordBall(0, "wide", 1 + n); setExtraPick(null); }}
+                    className="f-mono text-lg font-bold py-3 rounded-lg stamp-btn" style={{ background: C.gold + "33", border: `1.5px solid ${C.line}` }}>{n}</button>
+                ))}
+              </div>
+              <div className="f-ui text-xs mt-3" style={{ color: C.inkSoft }}>Tap 0 for a plain wide — the wide run is still recorded.</div>
+            </>
+          )}
+        </Modal>
       )}
 
       {wicketModal && (
@@ -1753,6 +2050,26 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           )}
         </Modal>
       )}
+
+      {confirmAbandon && (
+        <ConfirmModal
+          title="Abandon Match"
+          message="This permanently deletes the match in progress and everything scored so far. This can't be undone."
+          confirmLabel="Abandon"
+          onCancel={() => setConfirmAbandon(false)}
+          onConfirm={() => { deleteMatch(match.id); setConfirmAbandon(false); go("home"); }}
+        />
+      )}
+
+      {editOversModal && (
+        <Modal title="Edit Overs" onClose={() => setEditOversModal(false)}>
+          <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>Fixes the overs-per-innings limit for this match if it was entered wrong. Applies immediately to both innings.</div>
+          <Field label="Overs per innings">
+            <TextInput type="number" min="1" value={oversInput} onChange={(e) => setOversInput(e.target.value)} />
+          </Field>
+          <Btn className="w-full" onClick={() => { updateMatchOvers(match.id, Number(oversInput)); setEditOversModal(false); }}>Save</Btn>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1813,8 +2130,9 @@ function SelectPrompt({ title, options, onPick }) {
 
 /* ---------------------------------- SUMMARY ---------------------------------- */
 
-function SummaryScreen({ match, teams, go }) {
+function SummaryScreen({ match, teams, deleteMatch, go }) {
   const [openExtras, setOpenExtras] = useState({});
+  const [confirmDelete, setConfirmDelete] = useState(false);
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
   const awards = match.status === "completed" ? computeMatchAwards(match, teams) : null;
   const teamOf = (id) => teams.find((t) => t.id === id)?.name || "";
@@ -1935,13 +2253,30 @@ function SummaryScreen({ match, teams, go }) {
           </div>
         );
       })}
+
+      {deleteMatch && (
+        <div className="mx-4 mt-6">
+          <button onClick={() => setConfirmDelete(true)} className="f-ui text-xs" style={{ color: C.ball }}>Delete this match</button>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete Match"
+          message="This permanently removes the match and its scorecard. This can't be undone."
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => { deleteMatch(match.id); setConfirmDelete(false); go("home"); }}
+        />
+      )}
     </div>
   );
 }
 
 /* ---------------------------------- APP ---------------------------------- */
 
-export default function CricketApp({ onLogout, userEmail }) {
+export default function CricketApp({ onLogout, userEmail, role, supabaseClient, linkedPlayerName, setLinkedPlayerName }) {
+  const isAdmin = role === "admin";
+  const isScorer = role === "scorer" || role === "admin";
   const [screen, setScreen] = useState("home");
   const [teams, setTeams] = useState([]);
   const [tournaments, setTournaments] = useState([]);
@@ -2071,6 +2406,20 @@ export default function CricketApp({ onLogout, userEmail }) {
     }));
   };
 
+  const deleteMatch = (matchId) => {
+    setMatches((ms) => ms.filter((m) => m.id !== matchId));
+    if (currentMatchId === matchId) setCurrentMatchId(null);
+  };
+
+  const deleteTournament = (tournamentId) => {
+    setTournaments((ts) => ts.filter((t) => t.id !== tournamentId));
+    setMatches((ms) => ms.map((m) => m.tournamentId === tournamentId ? { ...m, tournamentId: null } : m));
+  };
+
+  const updateMatchOvers = (matchId, newOversLimit) => {
+    setMatches((ms) => ms.map((m) => m.id === matchId ? { ...m, oversLimit: newOversLimit } : m));
+  };
+
   const currentMatch = matches.find((m) => m.id === currentMatchId) || null;
 
   if (!loaded) {
@@ -2081,14 +2430,15 @@ export default function CricketApp({ onLogout, userEmail }) {
     <div className="min-h-screen w-full" style={{ background: C.cream }}>
       {FONTS}
       <div className="max-w-md mx-auto min-h-screen" style={{ background: C.cream, boxShadow: "0 0 40px rgba(0,0,0,0.06)" }}>
-        {screen === "home" && <HomeScreen teams={teams} matches={matches} tournaments={tournaments} go={go} onLogout={onLogout} userEmail={userEmail} />}
+        {screen === "home" && <HomeScreen teams={teams} matches={matches} tournaments={tournaments} playerPool={playerPool} go={go} onLogout={onLogout} userEmail={userEmail} isScorer={isScorer} isAdmin={isAdmin} deleteMatch={isAdmin ? deleteMatch : null} supabaseClient={supabaseClient} linkedPlayerName={linkedPlayerName} setLinkedPlayerName={setLinkedPlayerName} />}
+        {screen === "manageAccess" && <ManageAccessScreen supabaseClient={supabaseClient} userEmail={userEmail} go={go} />}
         {screen === "teams" && <TeamsScreen teams={teams} setTeams={setTeams} playerPool={playerPool} setPlayerPool={setPlayerPool} go={go} />}
-        {screen === "tournaments" && <TournamentsScreen teams={teams} tournaments={tournaments} setTournaments={setTournaments} matches={matches} go={go} />}
-        {screen === "weekly" && <WeeklyScreen teams={teams} matches={matches} startScheduledMatch={startScheduledMatch} go={go} />}
+        {screen === "tournaments" && <TournamentsScreen teams={teams} tournaments={tournaments} setTournaments={setTournaments} matches={matches} deleteTournament={isAdmin ? deleteTournament : null} deleteMatch={isAdmin ? deleteMatch : null} go={go} />}
+        {screen === "weekly" && <WeeklyScreen teams={teams} matches={matches} startScheduledMatch={startScheduledMatch} deleteMatch={isAdmin ? deleteMatch : null} isScorer={isScorer} go={go} />}
         {screen === "playerStats" && <PlayerStatsScreen matches={matches} teams={teams} go={go} />}
-        {screen === "newMatch" && <NewMatchScreen teams={teams} tournaments={tournaments} createMatch={createMatch} presetCategory={presetCategory} go={go} />}
-        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} go={go} />}
-        {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} go={go} />}
+        {screen === "newMatch" && <NewMatchScreen teams={teams} tournaments={tournaments} createMatch={createMatch} presetCategory={presetCategory} isScorer={isScorer} go={go} />}
+        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isAdmin ? updateMatchOvers : null} isScorer={isScorer} go={go} />}
+        {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} go={go} />}
       </div>
     </div>
   );

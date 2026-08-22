@@ -721,7 +721,7 @@ function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, use
         <button onClick={() => go("weekly")} className="rounded-xl p-3 stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
           <Calendar size={17} style={{ color: C.ball }} />
           <div className="f-display text-sm mt-2" style={{ color: C.ink }}>Weekly</div>
-          <div className="f-ui text-[11px]" style={{ color: C.inkSoft }}>{matches.filter((m) => m.category === "weekly").length} fixtures</div>
+          <div className="f-ui text-[11px]" style={{ color: C.inkSoft }}>{matches.filter((m) => m.weekday).length} fixtures</div>
         </button>
       </div>
 
@@ -1408,7 +1408,7 @@ function WeeklyScreen({ teams, matches, startScheduledMatch, deleteMatch, isScor
   const [tossChoice, setTossChoice] = useState("bat");
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
-  const weekly = matches.filter((m) => m.category === "weekly").sort((a, b) => (a.matchDate || "") < (b.matchDate || "") ? 1 : -1);
+  const weekly = matches.filter((m) => m.weekday).sort((a, b) => (a.matchDate || "") < (b.matchDate || "") ? 1 : -1);
   const teamName = (id) => teams.find((t) => t.id === id)?.name || "Unknown";
   const fmtDate = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "";
 
@@ -1518,6 +1518,7 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isSco
   const [weekday, setWeekday] = useState("Saturday");
   const [matchDate, setMatchDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [venue, setVenue] = useState("");
+  const [alsoWeekly, setAlsoWeekly] = useState(false);
   const [teamAId, setTeamAId] = useState("");
   const [teamBId, setTeamBId] = useState("");
   const [overs, setOvers] = useState(20);
@@ -1540,9 +1541,10 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isSco
 
   const submit = () => {
     if (!canSubmit) return;
+    const attachWeekly = category === "weekly" || alsoWeekly;
     const created = createMatch({
       tournamentId: category === "tournament" ? (tournamentId || null) : null,
-      category, weekday: category === "weekly" ? weekday : null, matchDate: category === "weekly" ? matchDate : null, venue: category === "weekly" ? venue : null,
+      category, weekday: attachWeekly ? weekday : null, matchDate: attachWeekly ? matchDate : null, venue: attachWeekly ? venue : null,
       teamAId, teamBId, oversLimit: Number(overs), maxOversPerBowler, tossWinnerId: tossWinner || null, tossChoice,
     });
     go(created.status === "scheduled" ? "weekly" : "live");
@@ -1572,7 +1574,17 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isSco
           </Field>
         )}
 
-        {category === "weekly" && (
+        {category !== "weekly" && (
+          <Field label="Weekly Cricket">
+            <button onClick={() => setAlsoWeekly((v) => !v)} className="w-full flex items-center justify-between px-3 py-2.5 rounded-md stamp-btn"
+              style={{ background: alsoWeekly ? C.pitch : C.paper, color: alsoWeekly ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+              <span className="f-ui text-sm">Also save this to Weekly Cricket</span>
+              <span className="f-ui text-xs">{alsoWeekly ? "✓ On" : "Off"}</span>
+            </button>
+          </Field>
+        )}
+
+        {(category === "weekly" || alsoWeekly) && (
           <>
             <Field label="Date">
               <TextInput type="date" value={matchDate} onChange={(e) => setDateAndWeekday(e.target.value)} />

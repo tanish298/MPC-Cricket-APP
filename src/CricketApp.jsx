@@ -73,6 +73,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   let awaitingBowler = false, awaitingBatsman = false, complete = false, completeReason = "";
   let freeHit = false;
   const maxWickets = Math.max(squadLen - 1, 1);
+  let overStartEventIndex = [0]; // overStartEventIndex[N] = event index where over N began
 
   const ensureBat = (id) => { if (id && !batsmanStats[id]) batsmanStats[id] = { runs: 0, balls: 0, fours: 0, sixes: 0, out: false, howOut: null, fielder: null }; };
   const ensureBowl = (id) => { if (id && !bowlerStats[id]) bowlerStats[id] = { balls: 0, runs: 0, wickets: 0 }; };
@@ -81,7 +82,9 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   if (nonStriker) { ensureBat(nonStriker); battingOrder.push(nonStriker); }
   ensureBowl(bowler);
 
+  let evIdx = -1;
   for (const ev of innings.events) {
+    evIdx++;
     if (complete) break;
     if (ev.type === "newBowler") {
       bowler = ev.playerId; ensureBowl(bowler); awaitingBowler = false; overBalls = []; overRunsAcc = 0;
@@ -180,6 +183,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
         lastOverBowler = bowler;
         if (overRunsAcc === 0) maidens[bowler] = (maidens[bowler] || 0) + 1;
         overRunsAcc = 0;
+        overStartEventIndex.push(evIdx + 1);
         const t = striker; striker = nonStriker; nonStriker = t;
       }
 
@@ -199,10 +203,14 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   }
 
   const oversStr = `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`;
+  // Undo is allowed back to the start of the over before the current one --
+  // e.g. if we're partway through over 5, undo can reach back to the first
+  // ball of over 4, but no further. Keeps a stray tap from wiping the innings.
+  const undoBoundaryIndex = overStartEventIndex[Math.max(0, overStartEventIndex.length - 2)];
   return {
     striker, nonStriker, bowler, lastOverBowler, legalBalls, totalRuns, wickets,
     batsmanStats, bowlerStats, outPlayers, battingOrder, retiredPlayers, awaitingBowler, awaitingBatsman,
-    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships, fallOfWickets,
+    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships, fallOfWickets, undoBoundaryIndex,
   };
 }
 
@@ -1999,9 +2007,14 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
               className="f-ui text-xs font-bold py-2.5 rounded-lg stamp-btn disabled:opacity-40"
               style={{ background: C.gold, color: "#fff" }}>Call Back{state.retiredPlayers.length > 0 ? ` (${state.retiredPlayers.length})` : ""}</button>
           </div>
-          <button onClick={() => undoLast(idx)} disabled={innings.events.length === 0}
-            className="flex items-center gap-1.5 f-ui text-xs mt-4 disabled:opacity-30" style={{ color: C.inkSoft }}>
-            <Undo2 size={14} /> Undo last ball
+        </div>
+      )}
+
+      {isScorer && innings.events.length > state.undoBoundaryIndex && (
+        <div className="mx-4 mt-3 flex items-center justify-between px-3 py-2.5 rounded-lg" style={{ background: C.gold + "15", border: `1.5px solid ${C.gold}` }}>
+          <span className="f-ui text-xs" style={{ color: C.inkSoft }}>Made a mistake? You can undo back through this over and the previous one — even past a batsman or bowler change.</span>
+          <button onClick={() => undoLast(idx)} className="flex items-center gap-1.5 f-ui text-xs font-bold flex-shrink-0 ml-3 stamp-btn" style={{ color: C.pitch }}>
+            <Undo2 size={14} /> Undo
           </button>
         </div>
       )}
@@ -2062,6 +2075,14 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
 
       {wicketModal && (
         <Modal title="Wicket" onClose={() => setWicketModal(false)}>
+          <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: C.pitch + "12", border: `1.5px solid ${C.pitch}55` }}>
+            <div className="f-ui text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: C.inkSoft }}>Currently at the crease — check before confirming</div>
+            <div className="f-ui text-sm" style={{ color: C.ink }}>
+              <span className="font-semibold">{battingName(state.striker)}</span> <span style={{ color: C.inkSoft }}>on strike</span>
+              {" · "}
+              <span className="font-semibold">{battingName(state.nonStriker)}</span> <span style={{ color: C.inkSoft }}>non-striker</span>
+            </div>
+          </div>
           {state.nextBallFreeHit && (
             <div className="rounded-lg px-3 py-2 mb-3 f-ui text-xs font-bold text-center" style={{ background: C.gold, color: "#fff" }}>
               ⚡ Free hit — only Run Out is allowed

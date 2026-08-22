@@ -66,6 +66,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   let maidens = {}; // bowlerId -> count
   let overRunsAcc = 0;
   let partnerships = []; // { batsman1, batsman2, runs, wicketNumber, unbeaten }
+  let fallOfWickets = []; // { wicketNumber, score, oversStr, batsmanId }
   let partnerRuns = 0;
   let currentPair = (striker && nonStriker) ? [striker, nonStriker] : null;
   let overBalls = [];
@@ -158,6 +159,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
         if (ev.wicket.type !== "Run Out") bowlerStats[bowler].wickets++;
         wicketFlag = true;
         symbol = "W";
+        fallOfWickets.push({ wicketNumber: wickets, score: totalRuns, oversStr: `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`, batsmanId: outId });
         if (currentPair) partnerships.push({ batsman1: currentPair[0], batsman2: currentPair[1], runs: partnerRuns, wicketNumber: wickets, unbeaten: false });
         currentPair = null; partnerRuns = 0;
       } else if (extraType === "wide") symbol = extraRuns > 1 ? `Wd+${extraRuns - 1}` : "Wd";
@@ -200,7 +202,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   return {
     striker, nonStriker, bowler, lastOverBowler, legalBalls, totalRuns, wickets,
     batsmanStats, bowlerStats, outPlayers, battingOrder, retiredPlayers, awaitingBowler, awaitingBatsman,
-    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships,
+    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships, fallOfWickets,
   };
 }
 
@@ -1085,8 +1087,11 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
     setName(""); setColor(TEAM_SWATCHES[0]); setAdding(false);
   };
   const addPlayer = (teamId) => {
-    if (!playerName.trim()) return;
-    setTeams((ts) => ts.map((t) => t.id === teamId ? { ...t, players: [...t.players, { id: uid(), name: playerName.trim() }] } : t));
+    const name = playerName.trim();
+    if (!name) return;
+    setTeams((ts) => ts.map((t) => t.id === teamId ? { ...t, players: [...t.players, { id: uid(), name }] } : t));
+    const alreadyInPool = playerPool.some((p) => p.name.trim().toLowerCase() === name.toLowerCase());
+    if (!alreadyInPool) setPlayerPool((pool) => [...pool, { id: uid(), name }]);
     setPlayerName("");
   };
   const removePlayer = (teamId, playerId) => {
@@ -1155,11 +1160,12 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
       <div className="min-h-full" style={{ background: C.cream }}>
         <TopBar title={team.name} onBack={() => setOpenTeam(null)} />
         <div className="p-4">
-          <div className="flex gap-2 mb-2">
+          <div className="flex gap-2 mb-1">
             <TextInput placeholder="Player name (e.g. a guest)" value={playerName} onChange={(e) => setPlayerName(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addPlayer(team.id)} />
             <Btn onClick={() => addPlayer(team.id)}><Plus size={16} /></Btn>
           </div>
+          <div className="f-ui text-[11px] mb-3" style={{ color: C.inkSoft }}>New names are also added to Regular Players, so they're one tap away next time.</div>
           <button onClick={() => { setPoolSelected([]); setPoolModal(true); }} className="w-full f-ui text-xs font-semibold py-2.5 rounded-md mb-4 stamp-btn"
             style={{ background: C.gold + "22", color: C.gold, border: `1.5px solid ${C.gold}` }}>
             Add from Regular Players ({poolAvailable.length} available)
@@ -1849,7 +1855,19 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
       ) : state.awaitingBatsman ? (
         <SelectPrompt title="Select new batsman" options={availableBatsmen} onPick={(id) => {
           const lastVacancy = [...innings.events].reverse().find((e) => (e.type === "ball" && e.wicket) || e.type === "retire");
-          const end = lastVacancy?.type === "retire" ? lastVacancy.end : (lastVacancy?.wicket?.who === "nonstriker" ? "nonstriker" : "striker");
+          let end;
+          if (lastVacancy?.type === "retire") {
+            end = lastVacancy.end;
+          } else {
+            // A ball-wicket's "who" label was recorded at the moment of
+            // dismissal, but this same ball's normal strike/over-end swap
+            // may have since moved that player to the other slot. Check
+            // where they're actually sitting right now instead of trusting
+            // the static label -- otherwise the survivor gets overwritten
+            // and the dismissed player stays in the game.
+            const lastOutId = state.outPlayers[state.outPlayers.length - 1];
+            end = state.nonStriker === lastOutId ? "nonstriker" : "striker";
+          }
           appendEvent(idx, { type: "newBatsman", playerId: id, replacingEnd: end });
         }} />
       ) : state.awaitingBowler ? (
@@ -2131,11 +2149,23 @@ function SelectPrompt({ title, options, onPick }) {
 /* ---------------------------------- SUMMARY ---------------------------------- */
 
 function SummaryScreen({ match, teams, deleteMatch, go }) {
+  const [tab, setTab] = useState("overview"); // 'overview' | 'scorecard'
   const [openExtras, setOpenExtras] = useState({});
   const [confirmDelete, setConfirmDelete] = useState(false);
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
   const awards = match.status === "completed" ? computeMatchAwards(match, teams) : null;
   const teamOf = (id) => teams.find((t) => t.id === id)?.name || "";
+
+  const inningsData = match.innings.map((inn, i) => {
+    const bt = teams.find((t) => t.id === inn.battingTeamId);
+    const bowlT = teams.find((t) => t.id === inn.bowlingTeamId);
+    const target = i === 1 ? inn.target : null;
+    const st = computeInningsState(inn, bt.players.length, match.oversLimit, target);
+    const oversFaced = st.legalBalls / 6;
+    const runRate = oversFaced > 0 ? (st.totalRuns / oversFaced).toFixed(2) : "0.00";
+    return { i, inn, bt, bowlT, st, runRate };
+  });
+
   return (
     <div className="min-h-full pb-8" style={{ background: C.cream }}>
       <TopBar title="Scorecard" onBack={() => go("home")} />
@@ -2200,59 +2230,99 @@ function SummaryScreen({ match, teams, deleteMatch, go }) {
         </div>
       )}
 
-      {match.innings.map((inn, i) => {
-        const bt = teams.find((t) => t.id === inn.battingTeamId);
-        const bowlT = teams.find((t) => t.id === inn.bowlingTeamId);
-        const target = i === 1 ? inn.target : null;
-        const st = computeInningsState(inn, bt.players.length, match.oversLimit, target);
-        return (
-          <div key={i} className="mx-4 mt-4">
-            <div className="f-display text-base mb-2" style={{ color: C.ink }}>{bt.name} — {st.totalRuns}/{st.wickets} <span className="f-ui text-sm" style={{ color: C.inkSoft }}>({st.oversStr} ov)</span></div>
-            <button onClick={() => setOpenExtras((o) => ({ ...o, [i]: !o[i] }))}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-lg mb-3 stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
-              <span className="f-ui text-xs" style={{ color: C.inkSoft }}>Extras: <span className="f-mono font-semibold" style={{ color: C.ink }}>{extrasTotal(st.extras)}</span></span>
-              <span className="f-ui text-xs font-semibold" style={{ color: C.pitch }}>{openExtras[i] ? "Hide" : "Breakdown"}</span>
-            </button>
-            {openExtras[i] && <div className="mb-3"><ExtrasBreakdown extras={st.extras} /></div>}
-            <div className="rounded-xl overflow-hidden mb-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
-              <div className="grid grid-cols-[1fr,36px,36px,32px,32px,44px] px-3 py-1.5 f-ui text-[10px] font-bold uppercase" style={{ color: C.inkSoft, borderBottom: `1px solid ${C.line}` }}>
-                <div>Batter</div><div className="text-center">R</div><div className="text-center">B</div><div className="text-center">4s</div><div className="text-center">6s</div><div className="text-center">SR</div>
-              </div>
-              {st.battingOrder.map((id) => {
-                const s = st.batsmanStats[id];
-                const name = bt.players.find((p) => p.id === id)?.name;
-                return (
-                  <div key={id} className="grid grid-cols-[1fr,36px,36px,32px,32px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
-                    <div className="f-ui truncate" style={{ color: C.ink }}>{name}<span className="block text-[10px]" style={{ color: C.inkSoft }}>{s.out ? `${s.howOut}${s.fielder ? ` (${s.fielder})` : ""}` : (st.retiredPlayers.includes(id) ? "retired hurt" : "not out")}</span></div>
-                    <div className="text-center font-semibold">{s.runs}</div>
-                    <div className="text-center">{s.balls}</div>
-                    <div className="text-center">{s.fours}</div>
-                    <div className="text-center">{s.sixes}</div>
-                    <div className="text-center">{fmtSR(s.runs, s.balls)}</div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
-              <div className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 f-ui text-[10px] font-bold uppercase" style={{ color: C.inkSoft, borderBottom: `1px solid ${C.line}` }}>
-                <div>Bowler</div><div className="text-center">O</div><div className="text-center">R</div><div className="text-center">W</div><div className="text-center">Econ</div>
-              </div>
-              {Object.entries(st.bowlerStats).map(([id, s]) => {
-                const name = bowlT.players.find((p) => p.id === id)?.name;
-                return (
-                  <div key={id} className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
-                    <div className="f-ui truncate" style={{ color: C.ink }}>{name}</div>
-                    <div className="text-center">{Math.floor(s.balls / 6)}.{s.balls % 6}</div>
-                    <div className="text-center">{s.runs}</div>
-                    <div className="text-center font-semibold">{s.wickets}</div>
-                    <div className="text-center">{fmtEcon(s.runs, s.balls)}</div>
-                  </div>
-                );
-              })}
-            </div>
+      <div className="mx-4 mt-4 flex gap-2">
+        {[["overview", "Overview"], ["scorecard", "Scorecard"]].map(([v, label]) => (
+          <button key={v} onClick={() => setTab(v)} className="flex-1 f-ui text-sm py-2 rounded-md stamp-btn"
+            style={{ background: tab === v ? C.pitch : C.paper, color: tab === v ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "overview" && inningsData.map(({ i, bt, bowlT, st, runRate }) => (
+        <div key={i} className="mx-4 mt-4">
+          <div className="f-display text-base mb-1" style={{ color: C.ink }}>{bt.name} — {st.totalRuns}/{st.wickets} <span className="f-ui text-sm" style={{ color: C.inkSoft }}>({st.oversStr} ov)</span></div>
+          <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>Run rate: <span className="f-mono font-semibold" style={{ color: C.pitch }}>{runRate}</span></div>
+
+          <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Fall of Wickets</div>
+          <div className="rounded-xl overflow-hidden mb-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            {st.fallOfWickets.length === 0 && <div className="p-3 f-ui text-xs" style={{ color: C.inkSoft }}>No wickets fell.</div>}
+            {st.fallOfWickets.map((fow, wi) => {
+              const name = bt.players.find((p) => p.id === fow.batsmanId)?.name || "?";
+              return (
+                <div key={wi} className="flex items-center justify-between px-3 py-2 f-ui text-xs" style={{ borderTop: wi === 0 ? "none" : `1px solid ${C.line}` }}>
+                  <span style={{ color: C.ink }}>{fow.wicketNumber}. {name}</span>
+                  <span className="f-mono" style={{ color: C.inkSoft }}>{fow.score}-{fow.wicketNumber} ({fow.oversStr})</span>
+                </div>
+              );
+            })}
           </div>
-        );
-      })}
+
+          <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Partnerships</div>
+          <div className="rounded-xl overflow-hidden mb-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            {st.partnerships.length === 0 && <div className="p-3 f-ui text-xs" style={{ color: C.inkSoft }}>No completed partnerships.</div>}
+            {st.partnerships.map((pt, pi) => {
+              const n1 = bt.players.find((p) => p.id === pt.batsman1)?.name || "?";
+              const n2 = bt.players.find((p) => p.id === pt.batsman2)?.name || "?";
+              return (
+                <div key={pi} className="flex items-center justify-between px-3 py-2 f-ui text-xs" style={{ borderTop: pi === 0 ? "none" : `1px solid ${C.line}` }}>
+                  <span style={{ color: C.ink }}>{n1} & {n2}</span>
+                  <span className="f-mono font-semibold" style={{ color: C.pitch }}>{pt.runs}{pt.unbeaten ? "*" : ""}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <button onClick={() => setOpenExtras((o) => ({ ...o, [i]: !o[i] }))}
+            className="w-full flex items-center justify-between px-3 py-2 rounded-lg stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            <span className="f-ui text-xs" style={{ color: C.inkSoft }}>Extras: <span className="f-mono font-semibold" style={{ color: C.ink }}>{extrasTotal(st.extras)}</span></span>
+            <span className="f-ui text-xs font-semibold" style={{ color: C.pitch }}>{openExtras[i] ? "Hide" : "Breakdown"}</span>
+          </button>
+          {openExtras[i] && <div className="mt-3"><ExtrasBreakdown extras={st.extras} /></div>}
+        </div>
+      ))}
+
+      {tab === "scorecard" && inningsData.map(({ i, bt, bowlT, st }) => (
+        <div key={i} className="mx-4 mt-4">
+          <div className="f-display text-base mb-2" style={{ color: C.ink }}>{bt.name} — {st.totalRuns}/{st.wickets} <span className="f-ui text-sm" style={{ color: C.inkSoft }}>({st.oversStr} ov)</span></div>
+          <div className="rounded-xl overflow-hidden mb-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            <div className="grid grid-cols-[1fr,36px,36px,32px,32px,44px] px-3 py-1.5 f-ui text-[10px] font-bold uppercase" style={{ color: C.inkSoft, borderBottom: `1px solid ${C.line}` }}>
+              <div>Batter</div><div className="text-center">R</div><div className="text-center">B</div><div className="text-center">4s</div><div className="text-center">6s</div><div className="text-center">SR</div>
+            </div>
+            {st.battingOrder.map((id) => {
+              const s = st.batsmanStats[id];
+              const name = bt.players.find((p) => p.id === id)?.name;
+              return (
+                <div key={id} className="grid grid-cols-[1fr,36px,36px,32px,32px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
+                  <div className="f-ui truncate" style={{ color: C.ink }}>{name}<span className="block text-[10px]" style={{ color: C.inkSoft }}>{s.out ? `${s.howOut}${s.fielder ? ` (${s.fielder})` : ""}` : (st.retiredPlayers.includes(id) ? "retired hurt" : "not out")}</span></div>
+                  <div className="text-center font-semibold">{s.runs}</div>
+                  <div className="text-center">{s.balls}</div>
+                  <div className="text-center">{s.fours}</div>
+                  <div className="text-center">{s.sixes}</div>
+                  <div className="text-center">{fmtSR(s.runs, s.balls)}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            <div className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 f-ui text-[10px] font-bold uppercase" style={{ color: C.inkSoft, borderBottom: `1px solid ${C.line}` }}>
+              <div>Bowler</div><div className="text-center">O</div><div className="text-center">R</div><div className="text-center">W</div><div className="text-center">Econ</div>
+            </div>
+            {Object.entries(st.bowlerStats).map(([id, s]) => {
+              const name = bowlT.players.find((p) => p.id === id)?.name;
+              return (
+                <div key={id} className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
+                  <div className="f-ui truncate" style={{ color: C.ink }}>{name}</div>
+                  <div className="text-center">{Math.floor(s.balls / 6)}.{s.balls % 6}</div>
+                  <div className="text-center">{s.runs}</div>
+                  <div className="text-center font-semibold">{s.wickets}</div>
+                  <div className="text-center">{fmtEcon(s.runs, s.balls)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
 
       {deleteMatch && (
         <div className="mx-4 mt-6">

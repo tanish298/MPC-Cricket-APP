@@ -1,0 +1,13 @@
+{
+  "name": "MPC Cricket App",
+  "short_name": "MPC Cricket",
+  "description": "Teams, tournaments, weekly fixtures, and live ball-by-ball cricket scoring.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F6F1E4",
+  "theme_color": "#1C4B3B",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

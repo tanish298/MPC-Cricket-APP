@@ -328,8 +328,14 @@ function computeMatchAwards(match, teams) {
   return { bestBatsman, bestBowler, bestFielder, bestPartnership };
 }
 
-function computeCareerStats(matches, teams, monthKey) {
-  const completed = matches.filter((m) => m.status === "completed" && (!monthKey || (m.createdAt || "").slice(0, 7) === monthKey));
+function computeCareerStats(matches, teams, filterType, filterKey) {
+  // filterType: 'month' | 'year' | 'all'. filterKey: 'YYYY-MM' for month, 'YYYY' for year, ignored for 'all'.
+  const completed = matches.filter((m) => {
+    if (m.status !== "completed") return false;
+    if (filterType === "month") return (m.createdAt || "").slice(0, 7) === filterKey;
+    if (filterType === "year") return (m.createdAt || "").slice(0, 4) === filterKey;
+    return true;
+  });
   const players = {};
   const ensure = (rawName) => {
     const name = rawName.trim();
@@ -553,7 +559,7 @@ function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, use
   }, [isAdmin, supabaseClient]);
 
   const myCareer = linkedPlayerName
-    ? computeCareerStats(matches, teams, null).players.find((p) => p.key === linkedPlayerName.trim().toLowerCase())
+    ? computeCareerStats(matches, teams, "all").players.find((p) => p.key === linkedPlayerName.trim().toLowerCase())
     : null;
 
   const liveMatches = matches.filter((m) => m.status === "live");
@@ -725,7 +731,7 @@ function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, use
         </button>
       </div>
 
-      <div className="px-4 mt-2.5">
+      <div className="px-4 mt-2.5 space-y-2">
         <button onClick={() => go("playerStats")} className="w-full flex items-center gap-3 rounded-xl p-3.5 stamp-btn" style={{ background: C.pitchDark, color: "#fff" }}>
           <BarChart3 size={18} style={{ color: C.gold }} />
           <div className="flex-1 text-left">
@@ -733,6 +739,14 @@ function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, use
             <div className="f-ui text-[11px] text-white/60">Top performers of the month, career numbers</div>
           </div>
           <ChevronRight size={16} className="text-white/60" />
+        </button>
+        <button onClick={() => go("matchHistory")} className="w-full flex items-center gap-3 rounded-xl p-3.5 stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+          <Calendar size={18} style={{ color: C.pitch }} />
+          <div className="flex-1 text-left">
+            <div className="f-display text-sm" style={{ color: C.ink }}>Match History</div>
+            <div className="f-ui text-[11px]" style={{ color: C.inkSoft }}>Browse every match, grouped by month</div>
+          </div>
+          <ChevronRight size={16} style={{ color: C.inkSoft }} />
         </button>
       </div>
 
@@ -848,13 +862,14 @@ function PlayerDetailModal({ stats, onClose }) {
 }
 
 function PlayerStatsScreen({ matches, teams, go }) {
-  const [range, setRange] = useState("month"); // 'month' | 'all'
+  const [range, setRange] = useState("month"); // 'month' | 'year' | 'all'
   const [tab, setTab] = useState("batting"); // 'batting' | 'bowling' | 'fielding'
   const [selectedPlayer, setSelectedPlayer] = useState(null);
 
   const monthKey = new Date().toISOString().slice(0, 7);
   const monthLabel = new Date().toLocaleDateString(undefined, { month: "long", year: "numeric" });
-  const data = computeCareerStats(matches, teams, range === "month" ? monthKey : null);
+  const yearKey = new Date().getFullYear().toString();
+  const data = computeCareerStats(matches, teams, range, range === "month" ? monthKey : range === "year" ? yearKey : null);
 
   const sortedBatting = [...data.players].filter((p) => p.batting.innings > 0).sort((a, b) => b.batting.runs - a.batting.runs);
   const sortedBowling = [...data.players].filter((p) => p.bowling.wickets > 0 || p.bowling.innings > 0).sort((a, b) => b.bowling.wickets - a.bowling.wickets || a.economy - b.economy);
@@ -867,11 +882,15 @@ function PlayerStatsScreen({ matches, teams, go }) {
       <TopBar title="Player Stats" onBack={() => go("home")} />
       <div className="p-4">
         <div className="flex gap-2 mb-4">
-          <button onClick={() => setRange("month")} className="flex-1 f-ui text-sm py-2 rounded-md stamp-btn"
+          <button onClick={() => setRange("month")} className="flex-1 f-ui text-xs py-2 rounded-md stamp-btn"
             style={{ background: range === "month" ? C.pitch : C.paper, color: range === "month" ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
             {monthLabel}
           </button>
-          <button onClick={() => setRange("all")} className="flex-1 f-ui text-sm py-2 rounded-md stamp-btn"
+          <button onClick={() => setRange("year")} className="flex-1 f-ui text-xs py-2 rounded-md stamp-btn"
+            style={{ background: range === "year" ? C.pitch : C.paper, color: range === "year" ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+            This Year
+          </button>
+          <button onClick={() => setRange("all")} className="flex-1 f-ui text-xs py-2 rounded-md stamp-btn"
             style={{ background: range === "all" ? C.pitch : C.paper, color: range === "all" ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
             All Time
           </button>
@@ -921,7 +940,7 @@ function PlayerStatsScreen({ matches, teams, go }) {
             )}
           </div>
         ) : (
-          <div className="text-center py-6 f-ui text-sm mb-4" style={{ color: C.inkSoft }}>No completed matches {range === "month" ? "this month" : "yet"}.</div>
+          <div className="text-center py-6 f-ui text-sm mb-4" style={{ color: C.inkSoft }}>No completed matches {range === "month" ? "this month" : range === "year" ? "this year" : "yet"}.</div>
         )}
 
         <div className="flex gap-2 mb-3">
@@ -1067,9 +1086,61 @@ function ManageAccessScreen({ supabaseClient, userEmail, go }) {
   );
 }
 
+/* ---------------------------------- MATCH HISTORY ---------------------------------- */
+
+function MatchHistoryScreen({ matches, teams, go }) {
+  const teamName = (id) => teams.find((t) => t.id === id)?.name || "Unknown";
+  const fmtMonth = (key) => {
+    const [y, m] = key.split("-");
+    return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  };
+  const fmtDate = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+
+  const withDates = matches.filter((m) => m.status !== "scheduled" && m.createdAt);
+  const groups = {};
+  withDates.forEach((m) => {
+    const key = m.createdAt.slice(0, 7);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(m);
+  });
+  const monthKeys = Object.keys(groups).sort((a, b) => (a < b ? 1 : -1));
+  monthKeys.forEach((k) => groups[k].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)));
+
+  return (
+    <div className="min-h-full pb-8" style={{ background: C.cream }}>
+      <TopBar title="Match History" onBack={() => go("home")} />
+      <div className="p-4">
+        {monthKeys.length === 0 && (
+          <div className="text-center py-10 f-ui text-sm" style={{ color: C.inkSoft }}>No matches yet.</div>
+        )}
+        {monthKeys.map((key) => (
+          <div key={key} className="mb-5">
+            <div className="f-display text-base mb-2" style={{ color: C.pitch }}>{fmtMonth(key)}</div>
+            <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+              {groups[key].map((m, i) => (
+                <button key={m.id} onClick={() => { go(m.status === "completed" ? "summary" : "live"); go.setMatch(m.id); }}
+                  className="w-full text-left px-4 py-3 flex items-center justify-between stamp-btn"
+                  style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
+                  <div className="min-w-0">
+                    <div className="f-ui text-sm font-medium truncate" style={{ color: C.ink }}>{teamName(m.teamAId)} vs {teamName(m.teamBId)}</div>
+                    <div className="f-ui text-xs mt-0.5" style={{ color: m.status === "live" ? C.ball : C.inkSoft }}>
+                      {fmtDate(m.createdAt)} · {m.status === "live" ? "● Live now" : (m.result?.text || "In progress")}
+                    </div>
+                  </div>
+                  <ChevronRight size={16} style={{ color: C.inkSoft, flexShrink: 0 }} />
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------- TEAMS ---------------------------------- */
 
-function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
+function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, isScorer, go }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [color, setColor] = useState(TEAM_SWATCHES[0]);
@@ -1136,17 +1207,19 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
         <TopBar title="Regular Players" onBack={() => setShowPoolManager(false)} />
         <div className="p-4">
           <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>Your saved pool of regulars — pick from here when building any team's roster. Removing someone here doesn't affect teams they're already on.</div>
-          <div className="flex gap-2 mb-4">
-            <TextInput placeholder="Add a regular player" value={newPoolName} onChange={(e) => setNewPoolName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addPoolName()} />
-            <Btn onClick={addPoolName}><Plus size={16} /></Btn>
-          </div>
+          {isScorer && (
+            <div className="flex gap-2 mb-4">
+              <TextInput placeholder="Add a regular player" value={newPoolName} onChange={(e) => setNewPoolName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addPoolName()} />
+              <Btn onClick={addPoolName}><Plus size={16} /></Btn>
+            </div>
+          )}
           <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
             {playerPool.length === 0 && <div className="p-4 f-ui text-sm" style={{ color: C.inkSoft }}>Pool is empty.</div>}
             {playerPool.map((p, i) => (
               <div key={p.id} className="flex items-center justify-between px-4 py-2.5" style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
                 <span className="f-ui text-sm" style={{ color: C.ink }}>{p.name}</span>
-                <button onClick={() => removePoolName(p.id)}><X size={15} style={{ color: C.inkSoft }} /></button>
+                {isScorer && <button onClick={() => removePoolName(p.id)}><X size={15} style={{ color: C.inkSoft }} /></button>}
               </div>
             ))}
           </div>
@@ -1160,35 +1233,41 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
       <div className="min-h-full" style={{ background: C.cream }}>
         <TopBar title={team.name} onBack={() => setOpenTeam(null)} />
         <div className="p-4">
-          <div className="flex gap-2 mb-1">
-            <TextInput placeholder="Player name (e.g. a guest)" value={playerName} onChange={(e) => setPlayerName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addPlayer(team.id)} />
-            <Btn onClick={() => addPlayer(team.id)}><Plus size={16} /></Btn>
-          </div>
-          <div className="f-ui text-[11px] mb-3" style={{ color: C.inkSoft }}>New names are also added to Regular Players, so they're one tap away next time.</div>
-          <button onClick={() => { setPoolSelected([]); setPoolModal(true); }} className="w-full f-ui text-xs font-semibold py-2.5 rounded-md mb-4 stamp-btn"
-            style={{ background: C.gold + "22", color: C.gold, border: `1.5px solid ${C.gold}` }}>
-            Add from Regular Players ({poolAvailable.length} available)
-          </button>
-          <div className="f-ui text-xs mb-2" style={{ color: C.inkSoft }}>Tap the shield to set the wicketkeeper.</div>
+          {isScorer && (
+            <>
+              <div className="flex gap-2 mb-1">
+                <TextInput placeholder="Player name (e.g. a guest)" value={playerName} onChange={(e) => setPlayerName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addPlayer(team.id)} />
+                <Btn onClick={() => addPlayer(team.id)}><Plus size={16} /></Btn>
+              </div>
+              <div className="f-ui text-[11px] mb-3" style={{ color: C.inkSoft }}>New names are also added to Regular Players, so they're one tap away next time.</div>
+              <button onClick={() => { setPoolSelected([]); setPoolModal(true); }} className="w-full f-ui text-xs font-semibold py-2.5 rounded-md mb-4 stamp-btn"
+                style={{ background: C.gold + "22", color: C.gold, border: `1.5px solid ${C.gold}` }}>
+                Add from Regular Players ({poolAvailable.length} available)
+              </button>
+              <div className="f-ui text-xs mb-2" style={{ color: C.inkSoft }}>Tap the shield to set the wicketkeeper.</div>
+            </>
+          )}
           <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
-            {team.players.length === 0 && <div className="p-4 f-ui text-sm" style={{ color: C.inkSoft }}>No players yet. Add your roster above.</div>}
+            {team.players.length === 0 && <div className="p-4 f-ui text-sm" style={{ color: C.inkSoft }}>No players yet.{isScorer ? " Add your roster above." : ""}</div>}
             {team.players.map((p, i) => (
               <div key={p.id} className="flex items-center justify-between px-4 py-2.5" style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
                 <span className="f-ui text-sm" style={{ color: C.ink }}>{i + 1}. {p.name}{team.keeperId === p.id ? <span className="f-ui text-[10px] font-bold ml-2 px-1.5 py-0.5 rounded" style={{ background: C.gold + "33", color: C.gold }}>WK</span> : null}</span>
-                <div className="flex items-center gap-3">
-                  <button onClick={() => setKeeper(team.id, p.id)} title="Set as wicketkeeper">
-                    <Shield size={15} style={{ color: team.keeperId === p.id ? C.gold : C.line }} fill={team.keeperId === p.id ? C.gold : "none"} />
-                  </button>
-                  <button onClick={() => removePlayer(team.id, p.id)}><X size={15} style={{ color: C.inkSoft }} /></button>
-                </div>
+                {isScorer && (
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => setKeeper(team.id, p.id)} title="Set as wicketkeeper">
+                      <Shield size={15} style={{ color: team.keeperId === p.id ? C.gold : C.line }} fill={team.keeperId === p.id ? C.gold : "none"} />
+                    </button>
+                    <button onClick={() => removePlayer(team.id, p.id)}><X size={15} style={{ color: C.inkSoft }} /></button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
-          <button onClick={() => removeTeam(team.id)} className="f-ui text-xs mt-4" style={{ color: C.ball }}>Delete team</button>
+          {isScorer && <button onClick={() => removeTeam(team.id)} className="f-ui text-xs mt-4" style={{ color: C.ball }}>Delete team</button>}
         </div>
 
-        {poolModal && (
+        {poolModal && isScorer && (
           <Modal title="Add from Regular Players" onClose={() => setPoolModal(false)}>
             <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md" style={{ background: C.gold + "22" }}>
               <span className="f-ui text-xs" style={{ color: C.inkSoft }}>Randomly pick</span>
@@ -1216,7 +1295,7 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
   return (
     <div className="min-h-full" style={{ background: C.cream }}>
       <TopBar title="Teams" onBack={() => go("home")} right={
-        <button onClick={() => setAdding(!adding)} className="text-white"><Plus size={20} /></button>
+        isScorer && <button onClick={() => setAdding(!adding)} className="text-white"><Plus size={20} /></button>
       } />
       <div className="px-4 pt-4">
         <button onClick={() => setShowPoolManager(true)} className="w-full flex items-center justify-between p-3 rounded-xl mb-3 stamp-btn" style={{ background: C.gold + "22", border: `1.5px solid ${C.gold}` }}>
@@ -1224,7 +1303,7 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
           <span className="f-ui text-xs" style={{ color: C.inkSoft }}>{playerPool.length} saved <ChevronRight size={12} className="inline" /></span>
         </button>
       </div>
-      {adding && (
+      {adding && isScorer && (
         <div className="p-4" style={{ background: C.paper, borderBottom: `1.5px solid ${C.line}` }}>
           <Field label="Team name">
             <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Riverside CC" />
@@ -1241,7 +1320,7 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
       )}
       <div className="p-4 space-y-2">
         {teams.length === 0 && !adding && (
-          <div className="text-center py-10 f-ui text-sm" style={{ color: C.inkSoft }}>No teams yet — tap + to add one.</div>
+          <div className="text-center py-10 f-ui text-sm" style={{ color: C.inkSoft }}>No teams yet{isScorer ? " — tap + to add one." : "."}</div>
         )}
         {teams.map((t) => (
           <button key={t.id} onClick={() => setOpenTeam(t.id)} className="w-full flex items-center justify-between p-4 rounded-xl stamp-btn"
@@ -1263,7 +1342,7 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, go }) {
 
 /* ---------------------------------- TOURNAMENTS ---------------------------------- */
 
-function TournamentsScreen({ teams, tournaments, setTournaments, matches, deleteTournament, deleteMatch, go }) {
+function TournamentsScreen({ teams, tournaments, setTournaments, matches, deleteTournament, deleteMatch, isScorer, go }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [selTeams, setSelTeams] = useState([]);
@@ -1361,9 +1440,9 @@ function TournamentsScreen({ teams, tournaments, setTournaments, matches, delete
   return (
     <div className="min-h-full" style={{ background: C.cream }}>
       <TopBar title="Tournaments" onBack={() => go("home")} right={
-        <button onClick={() => setAdding(!adding)} className="text-white"><Plus size={20} /></button>
+        isScorer && <button onClick={() => setAdding(!adding)} className="text-white"><Plus size={20} /></button>
       } />
-      {adding && (
+      {adding && isScorer && (
         <div className="p-4" style={{ background: C.paper, borderBottom: `1.5px solid ${C.line}` }}>
           <Field label="Tournament name">
             <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Summer Cup" />
@@ -1383,7 +1462,7 @@ function TournamentsScreen({ teams, tournaments, setTournaments, matches, delete
       )}
       <div className="p-4 space-y-2">
         {tournaments.length === 0 && !adding && (
-          <div className="text-center py-10 f-ui text-sm" style={{ color: C.inkSoft }}>No tournaments yet — tap + to start one.</div>
+          <div className="text-center py-10 f-ui text-sm" style={{ color: C.inkSoft }}>No tournaments yet{isScorer ? " — tap + to start one." : "."}</div>
         )}
         {tournaments.map((t) => (
           <button key={t.id} onClick={() => setOpenId(t.id)} className="w-full flex items-center justify-between p-4 rounded-xl stamp-btn"
@@ -2160,13 +2239,28 @@ function SelectPrompt({ title, options, onPick }) {
 
 /* ---------------------------------- SUMMARY ---------------------------------- */
 
-function SummaryScreen({ match, teams, deleteMatch, go }) {
+function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, go }) {
   const [tab, setTab] = useState("overview"); // 'overview' | 'scorecard'
   const [openExtras, setOpenExtras] = useState({});
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [weeklyModal, setWeeklyModal] = useState(false);
+  const [wkDate, setWkDate] = useState("");
+  const [wkDay, setWkDay] = useState("Saturday");
+  const [wkVenue, setWkVenue] = useState("");
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
   const awards = match.status === "completed" ? computeMatchAwards(match, teams) : null;
   const teamOf = (id) => teams.find((t) => t.id === id)?.name || "";
+
+  const openWeeklyModal = () => {
+    setWkDate(match.matchDate || match.createdAt || new Date().toISOString().slice(0, 10));
+    setWkDay(match.weekday || "Saturday");
+    setWkVenue(match.venue || "");
+    setWeeklyModal(true);
+  };
+  const setWkDateAndDay = (d) => {
+    setWkDate(d);
+    if (d) setWkDay(WEEKDAYS[new Date(d + "T00:00:00").getDay()]);
+  };
 
   const inningsData = match.innings.map((inn, i) => {
     const bt = teams.find((t) => t.id === inn.battingTeamId);
@@ -2185,6 +2279,18 @@ function SummaryScreen({ match, teams, deleteMatch, go }) {
         <Flag size={20} className="inline mb-1" style={{ color: C.gold }} />
         <div className="f-display text-white text-lg">{match.result?.text || "In progress"}</div>
       </div>
+
+      {updateMatchWeeklyInfo && (
+        <div className="mx-4 mt-3">
+          <button onClick={openWeeklyModal} className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            <span className="f-ui text-xs flex items-center gap-1.5" style={{ color: C.inkSoft }}>
+              <Calendar size={13} style={{ color: C.gold }} />
+              {match.weekday ? `${match.weekday}${match.venue ? ` · ${match.venue}` : ""}` : "Not in Weekly Cricket"}
+            </span>
+            <span className="f-ui text-xs font-semibold" style={{ color: C.pitch }}>{match.weekday ? "Edit" : "Add to Weekly Cricket"}</span>
+          </button>
+        </div>
+      )}
 
       {awards && (awards.bestBatsman || awards.bestBowler || awards.bestFielder || awards.bestPartnership) && (
         <div className="mx-4 mt-3">
@@ -2350,6 +2456,29 @@ function SummaryScreen({ match, teams, deleteMatch, go }) {
           onConfirm={() => { deleteMatch(match.id); setConfirmDelete(false); go("home"); }}
         />
       )}
+
+      {weeklyModal && (
+        <Modal title="Weekly Cricket" onClose={() => setWeeklyModal(false)}>
+          <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>Tag this match with a day and venue to have it show up in Weekly Cricket, whether it just happened or happened a while ago.</div>
+          <Field label="Date">
+            <TextInput type="date" value={wkDate} onChange={(e) => setWkDateAndDay(e.target.value)} />
+          </Field>
+          <Field label="Day of the week">
+            <div className="grid grid-cols-4 gap-1.5">
+              {WEEKDAYS.map((d) => (
+                <button key={d} onClick={() => setWkDay(d)} className="f-ui text-[11px] py-2 rounded-md stamp-btn"
+                  style={{ background: wkDay === d ? C.pitch : C.paper, color: wkDay === d ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+                  {d.slice(0, 3)}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="Venue">
+            <TextInput value={wkVenue} onChange={(e) => setWkVenue(e.target.value)} placeholder="e.g. Riverside Ground, Net 2" />
+          </Field>
+          <Btn className="w-full" onClick={() => { updateMatchWeeklyInfo(match.id, { weekday: wkDay, matchDate: wkDate, venue: wkVenue }); setWeeklyModal(false); }}>Save</Btn>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -2502,6 +2631,10 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     setMatches((ms) => ms.map((m) => m.id === matchId ? { ...m, oversLimit: newOversLimit } : m));
   };
 
+  const updateMatchWeeklyInfo = (matchId, { weekday, matchDate, venue }) => {
+    setMatches((ms) => ms.map((m) => m.id === matchId ? { ...m, weekday, matchDate, venue } : m));
+  };
+
   const currentMatch = matches.find((m) => m.id === currentMatchId) || null;
 
   if (!loaded) {
@@ -2514,13 +2647,14 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       <div className="max-w-md mx-auto min-h-screen" style={{ background: C.cream, boxShadow: "0 0 40px rgba(0,0,0,0.06)" }}>
         {screen === "home" && <HomeScreen teams={teams} matches={matches} tournaments={tournaments} playerPool={playerPool} go={go} onLogout={onLogout} userEmail={userEmail} isScorer={isScorer} isAdmin={isAdmin} deleteMatch={isAdmin ? deleteMatch : null} supabaseClient={supabaseClient} linkedPlayerName={linkedPlayerName} setLinkedPlayerName={setLinkedPlayerName} />}
         {screen === "manageAccess" && <ManageAccessScreen supabaseClient={supabaseClient} userEmail={userEmail} go={go} />}
-        {screen === "teams" && <TeamsScreen teams={teams} setTeams={setTeams} playerPool={playerPool} setPlayerPool={setPlayerPool} go={go} />}
-        {screen === "tournaments" && <TournamentsScreen teams={teams} tournaments={tournaments} setTournaments={setTournaments} matches={matches} deleteTournament={isAdmin ? deleteTournament : null} deleteMatch={isAdmin ? deleteMatch : null} go={go} />}
+        {screen === "teams" && <TeamsScreen teams={teams} setTeams={setTeams} playerPool={playerPool} setPlayerPool={setPlayerPool} isScorer={isScorer} go={go} />}
+        {screen === "tournaments" && <TournamentsScreen teams={teams} tournaments={tournaments} setTournaments={setTournaments} matches={matches} deleteTournament={isAdmin ? deleteTournament : null} deleteMatch={isAdmin ? deleteMatch : null} isScorer={isScorer} go={go} />}
         {screen === "weekly" && <WeeklyScreen teams={teams} matches={matches} startScheduledMatch={startScheduledMatch} deleteMatch={isAdmin ? deleteMatch : null} isScorer={isScorer} go={go} />}
         {screen === "playerStats" && <PlayerStatsScreen matches={matches} teams={teams} go={go} />}
+        {screen === "matchHistory" && <MatchHistoryScreen matches={matches} teams={teams} go={go} />}
         {screen === "newMatch" && <NewMatchScreen teams={teams} tournaments={tournaments} createMatch={createMatch} presetCategory={presetCategory} isScorer={isScorer} go={go} />}
-        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isAdmin ? updateMatchOvers : null} isScorer={isScorer} go={go} />}
-        {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} go={go} />}
+        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} isScorer={isScorer} go={go} />}
+        {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} updateMatchWeeklyInfo={isScorer ? updateMatchWeeklyInfo : null} go={go} />}
       </div>
     </div>
   );

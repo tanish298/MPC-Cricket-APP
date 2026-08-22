@@ -1765,7 +1765,6 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
   const [wicketWho, setWicketWho] = useState("striker");
   const [wicketRuns, setWicketRuns] = useState(0);
   const [wicketFielder, setWicketFielder] = useState("");
-  const [wicketNewBatsmanEnd, setWicketNewBatsmanEnd] = useState("striker");
   const [extraPick, setExtraPick] = useState(null); // 'bye' | 'legbye' | 'noball' | 'wide'
   const [keeperModal, setKeeperModal] = useState(false);
   const [retireModal, setRetireModal] = useState(false);
@@ -1839,9 +1838,8 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
     else if (wicketType === "Caught" || wicketType === "Run Out") { fielderName = bowlingTeam.players.find((p) => p.id === wicketFielder)?.name || null; fielderId = wicketFielder || null; }
     recordBall(wicketType === "Run Out" ? Number(wicketRuns) : 0, null, 0, {
       type: wicketType, who: wicketType === "Run Out" ? wicketWho : "striker", fielder: fielderName, fielderId,
-      newBatsmanEnd: wicketType === "Run Out" ? wicketNewBatsmanEnd : null,
     });
-    setWicketModal(false); setWicketType("Bowled"); setWicketWho("striker"); setWicketRuns(0); setWicketFielder(""); setWicketNewBatsmanEnd("striker");
+    setWicketModal(false); setWicketType("Bowled"); setWicketWho("striker"); setWicketRuns(0); setWicketFielder("");
   };
 
   const battingName = (id) => battingTeam.players.find((p) => p.id === id)?.name || "—";
@@ -1961,16 +1959,15 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           let end;
           if (lastVacancy?.type === "retire") {
             end = lastVacancy.end;
-          } else if (lastVacancy?.wicket?.type === "Run Out" && lastVacancy.wicket.newBatsmanEnd) {
-            // Run outs are genuinely ambiguous from run-count alone (it
-            // depends which specific leg of the run the dismissal happened
-            // on), so this uses the end the scorer explicitly chose when
-            // confirming the wicket, rather than guessing.
-            end = lastVacancy.wicket.newBatsmanEnd;
           } else {
-            // Non-run-out dismissals always happen with the striker at the
-            // crease, no ambiguity -- check where the dismissed player's
-            // identity ended up sitting after this ball's normal swap.
+            // Check which slot the dismissed player's identity is actually
+            // sitting in right now, after this ball's normal swap logic has
+            // run its course -- verified correct across odd-run, even-run,
+            // and over-boundary run-out cases. This is deliberately NOT a
+            // question we ask the scorer: our internal "striker"/"non-striker"
+            // labels are abstract roles, not fixed physical ends, so asking
+            // someone to translate what they saw on the field into those
+            // labels risks overwriting the wrong player entirely.
             const lastOutId = state.outPlayers[state.outPlayers.length - 1];
             end = state.nonStriker === lastOutId ? "nonstriker" : "striker";
           }
@@ -2132,14 +2129,6 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
                   <option value="">Select fielder</option>
                   {bowlingTeam.players.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </Select>
-              </Field>
-              <Field label="Which end is the new batsman coming in at?">
-                <div className="flex gap-2">
-                  <button onClick={() => setWicketNewBatsmanEnd("striker")} className="flex-1 f-ui text-xs py-2 rounded-md stamp-btn"
-                    style={{ background: wicketNewBatsmanEnd === "striker" ? C.pitch : C.paper, color: wicketNewBatsmanEnd === "striker" ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>Strike</button>
-                  <button onClick={() => setWicketNewBatsmanEnd("nonstriker")} className="flex-1 f-ui text-xs py-2 rounded-md stamp-btn"
-                    style={{ background: wicketNewBatsmanEnd === "nonstriker" ? C.pitch : C.paper, color: wicketNewBatsmanEnd === "nonstriker" ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>Non-strike</button>
-                </div>
               </Field>
             </>
           )}

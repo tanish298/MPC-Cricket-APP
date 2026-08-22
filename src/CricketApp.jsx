@@ -161,7 +161,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
         outPlayers.push(outId);
         if (ev.wicket.type !== "Run Out") bowlerStats[bowler].wickets++;
         wicketFlag = true;
-        symbol = "W";
+        symbol = runsBat > 0 ? `W+${runsBat}` : "W";
         fallOfWickets.push({ wicketNumber: wickets, score: totalRuns, oversStr: `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`, batsmanId: outId });
         if (currentPair) partnerships.push({ batsman1: currentPair[0], batsman2: currentPair[1], runs: partnerRuns, wicketNumber: wickets, unbeaten: false });
         currentPair = null; partnerRuns = 0;
@@ -1765,6 +1765,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
   const [wicketWho, setWicketWho] = useState("striker");
   const [wicketRuns, setWicketRuns] = useState(0);
   const [wicketFielder, setWicketFielder] = useState("");
+  const [wicketNewBatsmanEnd, setWicketNewBatsmanEnd] = useState("striker");
   const [extraPick, setExtraPick] = useState(null); // 'bye' | 'legbye' | 'noball' | 'wide'
   const [keeperModal, setKeeperModal] = useState(false);
   const [retireModal, setRetireModal] = useState(false);
@@ -1836,8 +1837,11 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
     let fielderName = null, fielderId = null;
     if (wicketType === "Stumped") { fielderName = effectiveKeeperName; fielderId = effectiveKeeperId || null; }
     else if (wicketType === "Caught" || wicketType === "Run Out") { fielderName = bowlingTeam.players.find((p) => p.id === wicketFielder)?.name || null; fielderId = wicketFielder || null; }
-    recordBall(wicketType === "Run Out" ? Number(wicketRuns) : 0, null, 0, { type: wicketType, who: wicketType === "Run Out" ? wicketWho : "striker", fielder: fielderName, fielderId });
-    setWicketModal(false); setWicketType("Bowled"); setWicketWho("striker"); setWicketRuns(0); setWicketFielder("");
+    recordBall(wicketType === "Run Out" ? Number(wicketRuns) : 0, null, 0, {
+      type: wicketType, who: wicketType === "Run Out" ? wicketWho : "striker", fielder: fielderName, fielderId,
+      newBatsmanEnd: wicketType === "Run Out" ? wicketNewBatsmanEnd : null,
+    });
+    setWicketModal(false); setWicketType("Bowled"); setWicketWho("striker"); setWicketRuns(0); setWicketFielder(""); setWicketNewBatsmanEnd("striker");
   };
 
   const battingName = (id) => battingTeam.players.find((p) => p.id === id)?.name || "—";
@@ -1881,7 +1885,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
         <div className="flex gap-1.5 mt-3 flex-wrap">
           {state.overBalls.map((b, i) => (
             <div key={i} className="f-mono text-xs w-7 h-7 rounded-full flex items-center justify-center"
-              style={{ background: b === "W" ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: b === "W" ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
+              style={{ background: (b === "W" || b.startsWith("W+")) ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: (b === "W" || b.startsWith("W+")) ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
               {b}
             </div>
           ))}
@@ -1957,13 +1961,16 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           let end;
           if (lastVacancy?.type === "retire") {
             end = lastVacancy.end;
+          } else if (lastVacancy?.wicket?.type === "Run Out" && lastVacancy.wicket.newBatsmanEnd) {
+            // Run outs are genuinely ambiguous from run-count alone (it
+            // depends which specific leg of the run the dismissal happened
+            // on), so this uses the end the scorer explicitly chose when
+            // confirming the wicket, rather than guessing.
+            end = lastVacancy.wicket.newBatsmanEnd;
           } else {
-            // A ball-wicket's "who" label was recorded at the moment of
-            // dismissal, but this same ball's normal strike/over-end swap
-            // may have since moved that player to the other slot. Check
-            // where they're actually sitting right now instead of trusting
-            // the static label -- otherwise the survivor gets overwritten
-            // and the dismissed player stays in the game.
+            // Non-run-out dismissals always happen with the striker at the
+            // crease, no ambiguity -- check where the dismissed player's
+            // identity ended up sitting after this ball's normal swap.
             const lastOutId = state.outPlayers[state.outPlayers.length - 1];
             end = state.nonStriker === lastOutId ? "nonstriker" : "striker";
           }
@@ -2125,6 +2132,14 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
                   <option value="">Select fielder</option>
                   {bowlingTeam.players.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </Select>
+              </Field>
+              <Field label="Which end is the new batsman coming in at?">
+                <div className="flex gap-2">
+                  <button onClick={() => setWicketNewBatsmanEnd("striker")} className="flex-1 f-ui text-xs py-2 rounded-md stamp-btn"
+                    style={{ background: wicketNewBatsmanEnd === "striker" ? C.pitch : C.paper, color: wicketNewBatsmanEnd === "striker" ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>Strike</button>
+                  <button onClick={() => setWicketNewBatsmanEnd("nonstriker")} className="flex-1 f-ui text-xs py-2 rounded-md stamp-btn"
+                    style={{ background: wicketNewBatsmanEnd === "nonstriker" ? C.pitch : C.paper, color: wicketNewBatsmanEnd === "nonstriker" ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>Non-strike</button>
+                </div>
               </Field>
             </>
           )}

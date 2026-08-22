@@ -1772,7 +1772,6 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
   const [callbackReturning, setCallbackReturning] = useState(null);
   const [extrasModal, setExtrasModal] = useState(false);
   const [confirmAbandon, setConfirmAbandon] = useState(false);
-  const [pendingNewBatsman, setPendingNewBatsman] = useState(null); // { playerId, defaultEnd }
 
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
 
@@ -1952,45 +1951,24 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
         <div className="mx-4 mt-3 rounded-xl p-4 text-center" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
           <div className="f-ui text-sm" style={{ color: C.inkSoft }}>You're watching this match live. Only a scorer can record balls.</div>
         </div>
-      ) : state.awaitingBatsman && !pendingNewBatsman ? (
+      ) : state.awaitingBatsman ? (
         <SelectPrompt title="Select new batsman" options={availableBatsmen} onPick={(id) => {
           const lastVacancy = [...innings.events].reverse().find((e) => (e.type === "ball" && e.wicket) || e.type === "retire");
           let end;
           if (lastVacancy?.type === "retire") {
             end = lastVacancy.end;
           } else {
-            // Best-guess default based on where the dismissed player's
-            // identity ended up sitting after this ball's normal swap
-            // logic. Correct in the common case, but which end a run-out
-            // actually happened at can genuinely go either way depending
-            // on exactly which run they were on -- so this is only a
-            // starting point, confirmed or overridden in the next step.
+            // A ball-wicket's "who" label was recorded at the moment of
+            // dismissal, but this same ball's normal strike/over-end swap
+            // may have since moved that player to the other slot. Check
+            // where they're actually sitting right now instead of trusting
+            // the static label -- otherwise the survivor gets overwritten
+            // and the dismissed player stays in the game.
             const lastOutId = state.outPlayers[state.outPlayers.length - 1];
             end = state.nonStriker === lastOutId ? "nonstriker" : "striker";
           }
-          setPendingNewBatsman({ playerId: id, defaultEnd: end });
+          appendEvent(idx, { type: "newBatsman", playerId: id, replacingEnd: end });
         }} />
-      ) : state.awaitingBatsman && pendingNewBatsman ? (
-        <div className="mx-4 mt-3 rounded-xl p-4" style={{ background: C.gold + "22", border: `1.5px solid ${C.gold}` }}>
-          <div className="f-ui text-xs font-bold uppercase tracking-wide mb-1" style={{ color: C.inkSoft }}>Which end are they coming in at?</div>
-          <div className="f-ui text-sm mb-3" style={{ color: C.ink }}>{battingName(pendingNewBatsman.playerId)}</div>
-          <div className="grid grid-cols-2 gap-2 mb-3">
-            {["striker", "nonstriker"].map((e) => (
-              <button key={e} onClick={() => setPendingNewBatsman((p) => ({ ...p, defaultEnd: e }))}
-                className="f-ui text-sm py-2.5 rounded-md stamp-btn"
-                style={{ background: pendingNewBatsman.defaultEnd === e ? C.pitch : C.paper, color: pendingNewBatsman.defaultEnd === e ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
-                {e === "striker" ? "Strike" : "Non-strike"}
-              </button>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <Btn variant="ghost" className="flex-1 text-center" onClick={() => setPendingNewBatsman(null)}>Back</Btn>
-            <Btn className="flex-1 text-center" onClick={() => {
-              appendEvent(idx, { type: "newBatsman", playerId: pendingNewBatsman.playerId, replacingEnd: pendingNewBatsman.defaultEnd });
-              setPendingNewBatsman(null);
-            }}>Confirm</Btn>
-          </div>
-        </div>
       ) : state.awaitingBowler ? (
         <SelectPrompt title="Select bowler for next over" options={availableBowlers} onPick={(id) => appendEvent(idx, { type: "newBowler", playerId: id })} />
       ) : keeperIsBowling ? (

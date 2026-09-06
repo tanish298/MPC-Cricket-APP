@@ -72,6 +72,8 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   let overBalls = [];
   let overHistory = []; // { overNumber, bowlerId, balls, runs, wickets, inProgress? }
   let overTotalRunsAcc = 0, overWicketsAcc = 0;
+  let bowlerDeliverySequence = {}; // bowlerId -> array of booleans (wicket or not), one per legal delivery
+  let hatTricks = []; // { bowlerId, oversStr }
   let awaitingBowler = false, awaitingBatsman = false, complete = false, completeReason = "";
   let freeHit = false;
   const maxWickets = Math.max(squadLen - 1, 1);
@@ -186,6 +188,14 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
       overBalls.push(symbol);
       overTotalRunsAcc += runsBat + extraRuns;
       if (wicketFlag) overWicketsAcc++;
+      if (isLegal) {
+        if (!bowlerDeliverySequence[bowler]) bowlerDeliverySequence[bowler] = [];
+        bowlerDeliverySequence[bowler].push(wicketFlag);
+        const seq = bowlerDeliverySequence[bowler];
+        if (seq.length >= 3 && seq[seq.length - 1] && seq[seq.length - 2] && seq[seq.length - 3]) {
+          hatTricks.push({ bowlerId: bowler, oversStr: `${Math.floor(legalBalls / 6)}.${legalBalls % 6}` });
+        }
+      }
 
       if (extraType === "noball") freeHit = true;
       else if (extraType !== "wide" && extraType !== "deadball") freeHit = false;
@@ -236,7 +246,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   return {
     striker, nonStriker, bowler, lastOverBowler, legalBalls, totalRuns, wickets,
     batsmanStats, bowlerStats, outPlayers, battingOrder, retiredPlayers, awaitingBowler, awaitingBatsman,
-    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships, fallOfWickets, undoBoundaryIndex, bowlerOvers, overHistory,
+    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships, fallOfWickets, undoBoundaryIndex, bowlerOvers, overHistory, hatTricks,
   };
 }
 
@@ -2098,6 +2108,16 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
         </Modal>
       )}
 
+      {state.hatTricks.length > 0 && (
+        <div className="mx-4 mt-3 space-y-2">
+          {state.hatTricks.map((h, i) => (
+            <div key={i} className="rounded-xl p-3 text-center f-ui text-sm font-bold" style={{ background: C.gold, color: "#fff" }}>
+              🎩 Hat-trick! {bowlingName(h.bowlerId)} — 3 wickets in 3 balls (over {h.oversStr})
+            </div>
+          ))}
+        </div>
+      )}
+
       {idx === 1 && (() => {
         const inn1 = match.innings[0];
         const team1 = teams.find((t) => t.id === inn1.battingTeamId);
@@ -2624,7 +2644,6 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
   const [wkDate, setWkDate] = useState("");
   const [wkDay, setWkDay] = useState("Saturday");
   const [wkVenue, setWkVenue] = useState("");
-  const [showComparisonChart, setShowComparisonChart] = useState(false);
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
   const awards = match.status === "completed" ? computeMatchAwards(match, teams) : null;
   const teamOf = (id) => teams.find((t) => t.id === id)?.name || "";
@@ -2657,28 +2676,6 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
         <Flag size={20} className="inline mb-1" style={{ color: C.gold }} />
         <div className="f-display text-white text-lg">{match.result?.text || "In progress"}</div>
       </div>
-
-      {inningsData.length === 2 && (
-        <div className="mx-4 mt-3">
-          <button onClick={() => setShowComparisonChart(true)} className="w-full rounded-xl p-3 flex items-center justify-between stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
-            <span className="f-ui text-sm" style={{ color: C.ink }}>Run Comparison</span>
-            <span className="f-ui text-xs font-semibold" style={{ color: C.pitch }}>View chart</span>
-          </button>
-          {showComparisonChart && (
-            <Modal title="Run Comparison" onClose={() => setShowComparisonChart(false)}>
-              <RunComparisonChart
-                team1Name={inningsData[0].bt.name}
-                team1Points={computeCumulativePoints(inningsData[0].st.overHistory)}
-                team1Wickets={inningsData[0].st.fallOfWickets.map((w) => ({ over: oversStrToNum(w.oversStr), runs: w.score, wicketNumber: w.wicketNumber, oversStr: w.oversStr, batsmanName: inningsData[0].bt.players.find((p) => p.id === w.batsmanId)?.name || "?" }))}
-                team2Name={inningsData[1].bt.name}
-                team2Points={computeCumulativePoints(inningsData[1].st.overHistory)}
-                team2Wickets={inningsData[1].st.fallOfWickets.map((w) => ({ over: oversStrToNum(w.oversStr), runs: w.score, wicketNumber: w.wicketNumber, oversStr: w.oversStr, batsmanName: inningsData[1].bt.players.find((p) => p.id === w.batsmanId)?.name || "?" }))}
-                oversLimit={match.oversLimit}
-              />
-            </Modal>
-          )}
-        </div>
-      )}
 
       {updateMatchWeeklyInfo && (
         <div className="mx-4 mt-3">
@@ -2748,19 +2745,39 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
         </div>
       )}
 
-      <div className="mx-4 mt-4 flex gap-2">
-        {[["overview", "Overview"], ["scorecard", "Scorecard"]].map(([v, label]) => (
-          <button key={v} onClick={() => setTab(v)} className="flex-1 f-ui text-sm py-2 rounded-md stamp-btn"
-            style={{ background: tab === v ? C.pitch : C.paper, color: tab === v ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
-            {label}
+      <div className="mx-4 mt-4 flex gap-2 flex-wrap">
+        <button onClick={() => setTab("overview")} className="f-ui text-sm py-2 px-3 rounded-md stamp-btn"
+          style={{ background: tab === "overview" ? C.pitch : C.paper, color: tab === "overview" ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+          Overview
+        </button>
+        {inningsData.map(({ i, bt }) => (
+          <button key={i} onClick={() => setTab(`innings${i}`)} className="f-ui text-sm py-2 px-3 rounded-md stamp-btn"
+            style={{ background: tab === `innings${i}` ? C.pitch : C.paper, color: tab === `innings${i}` ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+            {bt.name}
           </button>
         ))}
+        {inningsData.length === 2 && (
+          <button onClick={() => setTab("comparison")} className="f-ui text-sm py-2 px-3 rounded-md stamp-btn"
+            style={{ background: tab === "comparison" ? C.pitch : C.paper, color: tab === "comparison" ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+            Compare
+          </button>
+        )}
       </div>
 
       {tab === "overview" && inningsData.map(({ i, bt, bowlT, st, runRate }) => (
         <div key={i} className="mx-4 mt-4">
           <div className="f-display text-base mb-1" style={{ color: C.ink }}>{bt.name} — {st.totalRuns}/{st.wickets} <span className="f-ui text-sm" style={{ color: C.inkSoft }}>({st.oversStr} ov)</span></div>
           <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>Run rate: <span className="f-mono font-semibold" style={{ color: C.pitch }}>{runRate}</span></div>
+
+          {st.hatTricks.length > 0 && (
+            <div className="space-y-2 mb-3">
+              {st.hatTricks.map((h, hi) => (
+                <div key={hi} className="rounded-xl p-3 text-center f-ui text-sm font-bold" style={{ background: C.gold, color: "#fff" }}>
+                  🎩 Hat-trick! {bowlT.players.find((p) => p.id === h.bowlerId)?.name || "?"} — 3 wickets in 3 balls (over {h.oversStr})
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Fall of Wickets</div>
           <div className="rounded-xl overflow-hidden mb-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
@@ -2800,7 +2817,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
         </div>
       ))}
 
-      {tab === "scorecard" && inningsData.map(({ i, bt, bowlT, st }) => (
+      {inningsData.map(({ i, bt, bowlT, st }) => tab === `innings${i}` && (
         <div key={i} className="mx-4 mt-4">
           <div className="f-display text-base mb-2" style={{ color: C.ink }}>{bt.name} — {st.totalRuns}/{st.wickets} <span className="f-ui text-sm" style={{ color: C.inkSoft }}>({st.oversStr} ov)</span></div>
           <div className="rounded-xl overflow-hidden mb-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
@@ -2845,6 +2862,20 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
           </div>
         </div>
       ))}
+
+      {tab === "comparison" && inningsData.length === 2 && (
+        <div className="mx-4 mt-4">
+          <RunComparisonChart
+            team1Name={inningsData[0].bt.name}
+            team1Points={computeCumulativePoints(inningsData[0].st.overHistory)}
+            team1Wickets={inningsData[0].st.fallOfWickets.map((w) => ({ over: oversStrToNum(w.oversStr), runs: w.score, wicketNumber: w.wicketNumber, oversStr: w.oversStr, batsmanName: inningsData[0].bt.players.find((p) => p.id === w.batsmanId)?.name || "?" }))}
+            team2Name={inningsData[1].bt.name}
+            team2Points={computeCumulativePoints(inningsData[1].st.overHistory)}
+            team2Wickets={inningsData[1].st.fallOfWickets.map((w) => ({ over: oversStrToNum(w.oversStr), runs: w.score, wicketNumber: w.wicketNumber, oversStr: w.oversStr, batsmanName: inningsData[1].bt.players.find((p) => p.id === w.batsmanId)?.name || "?" }))}
+            oversLimit={match.oversLimit}
+          />
+        </div>
+      )}
 
       {isAdmin && (
         <div className="mx-4 mt-6">

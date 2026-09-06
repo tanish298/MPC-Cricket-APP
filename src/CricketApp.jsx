@@ -106,6 +106,14 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
       currentPair = null; partnerRuns = 0;
       continue;
     }
+    if (ev.type === "swapStrike") {
+      // A manual, always-available correction: just swaps who's currently
+      // marked on strike. Doesn't touch runs, wickets, or anything else --
+      // for those rare cases where an ambiguous dismissal left the wrong
+      // person with the asterisk, the scorer can just tap the other name.
+      const t = striker; striker = nonStriker; nonStriker = t;
+      continue;
+    }
     if (ev.type === "callback") {
       retiredPlayers = retiredPlayers.filter((id) => id !== ev.returningId);
       retiredPlayers.push(ev.outgoingId);
@@ -1760,6 +1768,7 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isSco
 function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, deleteMatch, updateMatchOvers, isScorer, go }) {
   const [editOversModal, setEditOversModal] = useState(false);
   const [oversInput, setOversInput] = useState(0);
+  const [liveTab, setLiveTab] = useState("live"); // 'live' | 'scorecard'
   const [wicketModal, setWicketModal] = useState(false);
   const [wicketType, setWicketType] = useState("Bowled");
   const [wicketWho, setWicketWho] = useState("striker");
@@ -1901,6 +1910,61 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
         </Modal>
       )}
 
+      <div className="mx-4 mt-3 flex gap-2">
+        {[["live", "Live"], ["scorecard", "Full Scorecard"]].map(([v, label]) => (
+          <button key={v} onClick={() => setLiveTab(v)} className="flex-1 f-ui text-xs py-2 rounded-md stamp-btn"
+            style={{ background: liveTab === v ? C.pitch : C.paper, color: liveTab === v ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {liveTab === "scorecard" && (
+        <div className="mx-4 mt-4">
+          <div className="rounded-xl overflow-hidden mb-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            <div className="grid grid-cols-[1fr,36px,36px,32px,32px,44px] px-3 py-1.5 f-ui text-[10px] font-bold uppercase" style={{ color: C.inkSoft, borderBottom: `1px solid ${C.line}` }}>
+              <div>Batter</div><div className="text-center">R</div><div className="text-center">B</div><div className="text-center">4s</div><div className="text-center">6s</div><div className="text-center">SR</div>
+            </div>
+            {state.battingOrder.map((id) => {
+              const s = state.batsmanStats[id];
+              const name = battingTeam.players.find((p) => p.id === id)?.name;
+              return (
+                <div key={id} className="grid grid-cols-[1fr,36px,36px,32px,32px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
+                  <div className="f-ui truncate" style={{ color: C.ink }}>
+                    {name}{(id === state.striker || id === state.nonStriker) && !s.out ? " *" : ""}
+                    <span className="block text-[10px]" style={{ color: C.inkSoft }}>{s.out ? `${s.howOut}${s.fielder ? ` (${s.fielder})` : ""}` : (state.retiredPlayers.includes(id) ? "retired hurt" : "not out")}</span>
+                  </div>
+                  <div className="text-center font-semibold">{s.runs}</div>
+                  <div className="text-center">{s.balls}</div>
+                  <div className="text-center">{s.fours}</div>
+                  <div className="text-center">{s.sixes}</div>
+                  <div className="text-center">{fmtSR(s.runs, s.balls)}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            <div className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 f-ui text-[10px] font-bold uppercase" style={{ color: C.inkSoft, borderBottom: `1px solid ${C.line}` }}>
+              <div>Bowler</div><div className="text-center">O</div><div className="text-center">R</div><div className="text-center">W</div><div className="text-center">Econ</div>
+            </div>
+            {Object.entries(state.bowlerStats).map(([id, s]) => {
+              const name = bowlingTeam.players.find((p) => p.id === id)?.name;
+              return (
+                <div key={id} className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
+                  <div className="f-ui truncate" style={{ color: C.ink }}>{name}{id === state.bowler ? " *" : ""}</div>
+                  <div className="text-center">{Math.floor(s.balls / 6)}.{s.balls % 6}</div>
+                  <div className="text-center">{s.runs}</div>
+                  <div className="text-center font-semibold">{s.wickets}</div>
+                  <div className="text-center">{fmtEcon(s.runs, s.balls)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {liveTab === "live" && (
+      <>
       {/* Batsmen / bowler */}
       <div className="mx-4 mt-3 rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
         <div className="grid grid-cols-[1fr,44px,32px,32px,44px] px-3 py-1.5 f-ui text-[10px] font-bold uppercase" style={{ color: C.inkSoft, borderBottom: `1px solid ${C.line}` }}>
@@ -1908,16 +1972,23 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
         </div>
         {[state.striker, state.nonStriker].map((id) => {
           const s = state.batsmanStats[id] || { runs: 0, balls: 0, fours: 0, sixes: 0 };
-          return (
-            <div key={id} className="grid grid-cols-[1fr,44px,32px,32px,44px] px-3 py-1.5 items-center f-mono text-xs">
-              <div className="f-ui truncate" style={{ color: C.ink }}>{battingName(id)}{id === state.striker ? " *" : ""}</div>
+          const isStriker = id === state.striker;
+          const row = (
+            <div className="grid grid-cols-[1fr,44px,32px,32px,44px] px-3 py-1.5 items-center f-mono text-xs">
+              <div className="f-ui truncate" style={{ color: C.ink }}>{battingName(id)}{isStriker ? " *" : ""}</div>
               <div className="text-center font-semibold">{s.runs}</div>
               <div className="text-center">{s.balls}</div>
               <div className="text-center">{s.fours}/{s.sixes}</div>
               <div className="text-center">{fmtSR(s.runs, s.balls)}</div>
             </div>
           );
+          return isScorer && !isStriker ? (
+            <button key={id} onClick={() => appendEvent(idx, { type: "swapStrike" })} className="w-full text-left stamp-btn" title="Tap to make this batter the striker">
+              {row}
+            </button>
+          ) : <div key={id}>{row}</div>;
         })}
+        {isScorer && <div className="px-3 pb-1.5 -mt-1 f-ui text-[10px]" style={{ color: C.inkSoft }}>Tap either name to correct who's on strike, anytime.</div>}
         <div className="px-3 py-1.5 f-mono text-xs" style={{ borderTop: `1px solid ${C.line}`, color: C.inkSoft }}>
           <span className="f-ui">Bowling: </span>{bowlingName(state.bowler)} — {state.bowlerStats[state.bowler] ? `${Math.floor(state.bowlerStats[state.bowler].balls/6)}.${state.bowlerStats[state.bowler].balls%6}-${state.bowlerStats[state.bowler].runs}-${state.bowlerStats[state.bowler].wickets}` : "0.0-0-0"}
           {" "}(econ {fmtEcon(state.bowlerStats[state.bowler]?.runs || 0, state.bowlerStats[state.bowler]?.balls || 0)})
@@ -2021,6 +2092,8 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
             <Undo2 size={14} /> Undo
           </button>
         </div>
+      )}
+      </>
       )}
 
       {extraPick && (

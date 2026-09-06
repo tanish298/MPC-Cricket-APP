@@ -240,6 +240,80 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   };
 }
 
+function computeCumulativePoints(overHistory) {
+  const sorted = [...overHistory].sort((a, b) => a.overNumber - b.overNumber);
+  let cum = 0;
+  const points = [{ over: 0, runs: 0 }];
+  sorted.forEach((ov) => {
+    cum += ov.runs;
+    points.push({ over: ov.overNumber, runs: cum });
+  });
+  return points;
+}
+
+function oversStrToNum(oversStr) {
+  const [o, b] = oversStr.split(".").map(Number);
+  return o + (b || 0) / 6;
+}
+
+function RunComparisonChart({ team1Name, team1Points, team1Wickets, team2Name, team2Points, team2Wickets, oversLimit }) {
+  const [selectedWicket, setSelectedWicket] = useState(null);
+  const svgW = 320, svgH = 200;
+  const padL = 32, padR = 10, padT = 10, padB = 22;
+  const plotW = svgW - padL - padR, plotH = svgH - padT - padB;
+  const allRuns = [...team1Points.map((p) => p.runs), ...(team2Points || []).map((p) => p.runs), 1];
+  const maxRuns = Math.max(...allRuns) * 1.15;
+  const xScale = (o) => padL + (Math.min(o, oversLimit) / oversLimit) * plotW;
+  const yScale = (r) => padT + plotH - (r / maxRuns) * plotH;
+  const toPath = (pts) => pts.map((p, i) => `${i === 0 ? "M" : "L"}${xScale(p.over).toFixed(1)},${yScale(p.runs).toFixed(1)}`).join(" ");
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(maxRuns * f));
+  const xTicks = [0, Math.round(oversLimit / 2), oversLimit];
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${svgW} ${svgH}`} style={{ width: "100%", height: "auto" }}>
+        {yTicks.map((t, i) => (
+          <g key={i}>
+            <line x1={padL} x2={svgW - padR} y1={yScale(t)} y2={yScale(t)} stroke={C.line} strokeWidth={1} />
+            <text x={padL - 5} y={yScale(t) + 3} textAnchor="end" fontSize="8" fill={C.inkSoft} fontFamily="monospace">{t}</text>
+          </g>
+        ))}
+        <line x1={padL} x2={svgW - padR} y1={svgH - padB} y2={svgH - padB} stroke={C.inkSoft} strokeWidth={1} />
+        {xTicks.map((o, i) => (
+          <text key={i} x={xScale(o)} y={svgH - padB + 12} textAnchor="middle" fontSize="8" fill={C.inkSoft} fontFamily="monospace">{o}</text>
+        ))}
+
+        <path d={toPath(team1Points)} fill="none" stroke={C.pitch} strokeWidth={2} />
+        {team2Points && <path d={toPath(team2Points)} fill="none" stroke={C.ball} strokeWidth={2} />}
+
+        {team1Wickets.map((w, i) => (
+          <circle key={`w1-${i}`} cx={xScale(w.over)} cy={yScale(w.runs)} r={4.5} fill={C.pitch} stroke="#fff" strokeWidth={1.5}
+            onClick={() => setSelectedWicket({ ...w, team: team1Name, color: C.pitch })} style={{ cursor: "pointer" }} />
+        ))}
+        {(team2Wickets || []).map((w, i) => (
+          <circle key={`w2-${i}`} cx={xScale(w.over)} cy={yScale(w.runs)} r={4.5} fill={C.ball} stroke="#fff" strokeWidth={1.5}
+            onClick={() => setSelectedWicket({ ...w, team: team2Name, color: C.ball })} style={{ cursor: "pointer" }} />
+        ))}
+      </svg>
+      <div className="flex items-center gap-4 mt-2 f-ui text-xs justify-center">
+        <span className="flex items-center gap-1.5"><span style={{ width: 12, height: 3, background: C.pitch, display: "inline-block", borderRadius: 2 }} />{team1Name}</span>
+        {team2Points && <span className="flex items-center gap-1.5"><span style={{ width: 12, height: 3, background: C.ball, display: "inline-block", borderRadius: 2 }} />{team2Name}</span>}
+      </div>
+      <div className="f-ui text-[10px] text-center mt-1" style={{ color: C.inkSoft }}>Tap a dot to see who was out</div>
+
+      {selectedWicket && (
+        <Modal title="Wicket" onClose={() => setSelectedWicket(null)}>
+          <div className="f-ui text-sm" style={{ color: C.ink }}>
+            <span className="font-semibold" style={{ color: selectedWicket.color }}>{selectedWicket.batsmanName}</span>
+            <span style={{ color: C.inkSoft }}> ({selectedWicket.team})</span>
+            <div className="f-mono text-xs mt-1" style={{ color: C.inkSoft }}>Out at {selectedWicket.runs}-{selectedWicket.wicketNumber}, over {selectedWicket.oversStr}</div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function fmtEcon(runs, balls) {
   if (!balls) return "-";
   const overs = balls / 6;
@@ -1172,6 +1246,93 @@ function MatchHistoryScreen({ matches, teams, go }) {
   );
 }
 
+/* ---------------------------------- FIX PLAYER (admin only) ---------------------------------- */
+
+function buildIdentitySlots(match) {
+  const slots = [];
+  match.innings.forEach((inn, i) => {
+    // Walk events to know roughly which over each moment happened at.
+    let legalBalls = 0;
+    const oversAt = () => `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`;
+
+    if (inn.openers.striker) slots.push({ inningsIdx: i, kind: "openerStriker", currentPlayerId: inn.openers.striker, label: `Innings ${i + 1} — opening striker`, team: "batting" });
+    if (inn.openers.nonStriker) slots.push({ inningsIdx: i, kind: "openerNonStriker", currentPlayerId: inn.openers.nonStriker, label: `Innings ${i + 1} — opening non-striker`, team: "batting" });
+    if (inn.openers.bowler) slots.push({ inningsIdx: i, kind: "openerBowler", currentPlayerId: inn.openers.bowler, label: `Innings ${i + 1} — opening bowler`, team: "bowling" });
+
+    inn.events.forEach((ev, evIdx) => {
+      if (ev.type === "ball") {
+        const isLegal = !(ev.extraType === "wide" || ev.extraType === "noball" || ev.extraType === "deadball");
+        if (isLegal) legalBalls++;
+        return;
+      }
+      if (ev.type === "newBatsman") {
+        slots.push({ inningsIdx: i, kind: "newBatsman", eventIndex: evIdx, currentPlayerId: ev.playerId, label: `Innings ${i + 1} — batsman in at ${oversAt()}`, team: "batting" });
+      } else if (ev.type === "newBowler") {
+        slots.push({ inningsIdx: i, kind: "newBowler", eventIndex: evIdx, currentPlayerId: ev.playerId, label: `Innings ${i + 1} — bowler for the over at ${oversAt()}`, team: "bowling" });
+      } else if (ev.type === "retire") {
+        slots.push({ inningsIdx: i, kind: "retire", eventIndex: evIdx, currentPlayerId: ev.playerId, label: `Innings ${i + 1} — retired at ${oversAt()}`, team: "batting" });
+      } else if (ev.type === "callback") {
+        slots.push({ inningsIdx: i, kind: "callbackReturning", eventIndex: evIdx, currentPlayerId: ev.returningId, label: `Innings ${i + 1} — called back at ${oversAt()}`, team: "batting" });
+      }
+    });
+  });
+  return slots;
+}
+
+function FixPlayerScreen({ match, teams, fixIdentitySlot, go }) {
+  const [editingSlot, setEditingSlot] = useState(null);
+
+  if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
+  const slots = buildIdentitySlots(match);
+  const nameFor = (inningsIdx, team, playerId) => {
+    const inn = match.innings[inningsIdx];
+    const teamId = team === "batting" ? inn.battingTeamId : inn.bowlingTeamId;
+    return teams.find((t) => t.id === teamId)?.players.find((p) => p.id === playerId)?.name || "—";
+  };
+  const rosterFor = (inningsIdx, team) => {
+    const inn = match.innings[inningsIdx];
+    const teamId = team === "batting" ? inn.battingTeamId : inn.bowlingTeamId;
+    return teams.find((t) => t.id === teamId)?.players || [];
+  };
+
+  return (
+    <div className="min-h-full pb-8" style={{ background: C.cream }}>
+      <TopBar title="Fix Player" onBack={() => go("home")} />
+      <div className="p-4">
+        <div className="f-ui text-xs mb-4" style={{ color: C.inkSoft }}>
+          Every moment a specific player's identity got recorded in this match. Fixing one here corrects every run, ball, and dismissal that followed it automatically — totals and overs don't change, only whose name they're filed under.
+        </div>
+        <div className="space-y-2">
+          {slots.map((slot, i) => (
+            <div key={i} className="rounded-xl p-3 flex items-center justify-between" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+              <div className="min-w-0">
+                <div className="f-ui text-xs" style={{ color: C.inkSoft }}>{slot.label}</div>
+                <div className="f-display text-sm truncate" style={{ color: C.ink }}>{nameFor(slot.inningsIdx, slot.team, slot.currentPlayerId)}</div>
+              </div>
+              <button onClick={() => setEditingSlot(slot)} className="f-ui text-xs font-semibold flex-shrink-0 ml-3 stamp-btn" style={{ color: C.pitch }}>Change</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {editingSlot && (
+        <Modal title="Who was it really?" onClose={() => setEditingSlot(null)}>
+          <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>{editingSlot.label}</div>
+          <div className="space-y-1.5">
+            {rosterFor(editingSlot.inningsIdx, editingSlot.team).map((p) => (
+              <button key={p.id} onClick={() => { fixIdentitySlot(match.id, editingSlot.inningsIdx, editingSlot, p.id); setEditingSlot(null); }}
+                className="w-full text-left f-ui text-sm px-3 py-2 rounded-md stamp-btn"
+                style={{ background: p.id === editingSlot.currentPlayerId ? C.pitch : C.paper, color: p.id === editingSlot.currentPlayerId ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+                {p.name}{p.id === editingSlot.currentPlayerId ? " (current)" : ""}
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------- TEAMS ---------------------------------- */
 
 function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, isScorer, go }) {
@@ -1783,11 +1944,12 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isSco
 
 /* ---------------------------------- LIVE SCORING ---------------------------------- */
 
-function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, undoIntoPreviousInnings, continueIfInningsComplete, deleteMatch, updateMatchOvers, endMatchNow, isScorer, go }) {
+function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, undoIntoPreviousInnings, continueIfInningsComplete, deleteMatch, updateMatchOvers, endMatchNow, isAdmin, isScorer, go }) {
   const [editOversModal, setEditOversModal] = useState(false);
   const [oversInput, setOversInput] = useState(0);
   const [liveTab, setLiveTab] = useState("live"); // 'live' | 'scorecard'
   const [confirmEndMatch, setConfirmEndMatch] = useState(false);
+  const [showComparisonChart, setShowComparisonChart] = useState(false);
   const [wicketModal, setWicketModal] = useState(false);
   const [wicketType, setWicketType] = useState("Bowled");
   const [wicketWho, setWicketWho] = useState("striker");
@@ -1888,6 +2050,9 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           {endMatchNow && (
             <button onClick={() => setConfirmEndMatch(true)} className="f-ui text-[10px] text-white/80 border border-white/30 rounded px-2 py-1">End match</button>
           )}
+          {isAdmin && (
+            <button onClick={() => { go.setMatch(match.id); go("fixPlayer"); }} className="f-ui text-[10px] text-white/80 border border-white/30 rounded px-2 py-1">Fix player</button>
+          )}
           {deleteMatch && (
             <button onClick={() => setConfirmAbandon(true)} className="text-white/80"><X size={18} /></button>
           )}
@@ -1932,6 +2097,40 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           <ExtrasBreakdown extras={state.extras} />
         </Modal>
       )}
+
+      {idx === 1 && (() => {
+        const inn1 = match.innings[0];
+        const team1 = teams.find((t) => t.id === inn1.battingTeamId);
+        const st1 = computeInningsState(inn1, team1.players.length, match.oversLimit, null);
+        const oversSoFar = Math.floor(state.legalBalls / 6);
+        const inn1Points = computeCumulativePoints(st1.overHistory);
+        const inn1AtSameOver = [...inn1Points].reverse().find((p) => p.over <= oversSoFar) || inn1Points[0];
+        return (
+          <div className="mx-4 mt-3">
+            <button onClick={() => setShowComparisonChart(true)} className="w-full rounded-xl p-3 stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+              <div className="f-ui text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: C.inkSoft }}>Run Comparison — tap to see the full chart</div>
+              <div className="flex items-center justify-between f-mono text-xs">
+                <span style={{ color: C.pitch }}>{team1.name}: {inn1AtSameOver.runs} after {Math.floor(inn1AtSameOver.over)} ov</span>
+                <span style={{ color: C.ball }}>{battingTeam.name}: {state.totalRuns} after {oversSoFar} ov</span>
+              </div>
+            </button>
+
+            {showComparisonChart && (
+              <Modal title="Run Comparison" onClose={() => setShowComparisonChart(false)}>
+                <RunComparisonChart
+                  team1Name={team1.name}
+                  team1Points={inn1Points}
+                  team1Wickets={st1.fallOfWickets.map((w) => ({ over: oversStrToNum(w.oversStr), runs: w.score, wicketNumber: w.wicketNumber, oversStr: w.oversStr, batsmanName: team1.players.find((p) => p.id === w.batsmanId)?.name || "?" }))}
+                  team2Name={battingTeam.name}
+                  team2Points={computeCumulativePoints(state.overHistory)}
+                  team2Wickets={state.fallOfWickets.map((w) => ({ over: oversStrToNum(w.oversStr), runs: w.score, wicketNumber: w.wicketNumber, oversStr: w.oversStr, batsmanName: battingTeam.players.find((p) => p.id === w.batsmanId)?.name || "?" }))}
+                  oversLimit={match.oversLimit}
+                />
+              </Modal>
+            )}
+          </div>
+        );
+      })()}
 
       <div className="mx-4 mt-3 flex gap-2">
         {[["live", "Live"], ["scorecard", "Full Scorecard"], ["overs", "Over Details"]].map(([v, label]) => (
@@ -2417,7 +2616,7 @@ function SelectPrompt({ title, options, onPick }) {
 
 /* ---------------------------------- SUMMARY ---------------------------------- */
 
-function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, go }) {
+function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdmin, go }) {
   const [tab, setTab] = useState("overview"); // 'overview' | 'scorecard'
   const [openExtras, setOpenExtras] = useState({});
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -2425,6 +2624,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, go })
   const [wkDate, setWkDate] = useState("");
   const [wkDay, setWkDay] = useState("Saturday");
   const [wkVenue, setWkVenue] = useState("");
+  const [showComparisonChart, setShowComparisonChart] = useState(false);
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
   const awards = match.status === "completed" ? computeMatchAwards(match, teams) : null;
   const teamOf = (id) => teams.find((t) => t.id === id)?.name || "";
@@ -2457,6 +2657,28 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, go })
         <Flag size={20} className="inline mb-1" style={{ color: C.gold }} />
         <div className="f-display text-white text-lg">{match.result?.text || "In progress"}</div>
       </div>
+
+      {inningsData.length === 2 && (
+        <div className="mx-4 mt-3">
+          <button onClick={() => setShowComparisonChart(true)} className="w-full rounded-xl p-3 flex items-center justify-between stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            <span className="f-ui text-sm" style={{ color: C.ink }}>Run Comparison</span>
+            <span className="f-ui text-xs font-semibold" style={{ color: C.pitch }}>View chart</span>
+          </button>
+          {showComparisonChart && (
+            <Modal title="Run Comparison" onClose={() => setShowComparisonChart(false)}>
+              <RunComparisonChart
+                team1Name={inningsData[0].bt.name}
+                team1Points={computeCumulativePoints(inningsData[0].st.overHistory)}
+                team1Wickets={inningsData[0].st.fallOfWickets.map((w) => ({ over: oversStrToNum(w.oversStr), runs: w.score, wicketNumber: w.wicketNumber, oversStr: w.oversStr, batsmanName: inningsData[0].bt.players.find((p) => p.id === w.batsmanId)?.name || "?" }))}
+                team2Name={inningsData[1].bt.name}
+                team2Points={computeCumulativePoints(inningsData[1].st.overHistory)}
+                team2Wickets={inningsData[1].st.fallOfWickets.map((w) => ({ over: oversStrToNum(w.oversStr), runs: w.score, wicketNumber: w.wicketNumber, oversStr: w.oversStr, batsmanName: inningsData[1].bt.players.find((p) => p.id === w.batsmanId)?.name || "?" }))}
+                oversLimit={match.oversLimit}
+              />
+            </Modal>
+          )}
+        </div>
+      )}
 
       {updateMatchWeeklyInfo && (
         <div className="mx-4 mt-3">
@@ -2624,8 +2846,14 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, go })
         </div>
       ))}
 
-      {deleteMatch && (
+      {isAdmin && (
         <div className="mx-4 mt-6">
+          <button onClick={() => { go.setMatch(match.id); go("fixPlayer"); }} className="f-ui text-xs font-semibold" style={{ color: C.pitch }}>Fix a wrongly-attributed player</button>
+        </div>
+      )}
+
+      {deleteMatch && (
+        <div className="mx-4 mt-2">
           <button onClick={() => setConfirmDelete(true)} className="f-ui text-xs" style={{ color: C.ball }}>Delete this match</button>
         </div>
       )}
@@ -2871,6 +3099,26 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     setMatches((ms) => ms.map((m) => m.id === matchId ? { ...m, weekday, matchDate, venue } : m));
   };
 
+  const fixIdentitySlot = (matchId, inningsIdx, slot, newPlayerId) => {
+    setMatches((ms) => ms.map((m) => {
+      if (m.id !== matchId) return m;
+      const innings = m.innings.map((inn, i) => {
+        if (i !== inningsIdx) return inn;
+        if (slot.kind === "openerStriker") return { ...inn, openers: { ...inn.openers, striker: newPlayerId } };
+        if (slot.kind === "openerNonStriker") return { ...inn, openers: { ...inn.openers, nonStriker: newPlayerId } };
+        if (slot.kind === "openerBowler") return { ...inn, openers: { ...inn.openers, bowler: newPlayerId } };
+        const events = inn.events.map((ev, evIdx) => {
+          if (evIdx !== slot.eventIndex) return ev;
+          if (slot.kind === "newBatsman" || slot.kind === "newBowler" || slot.kind === "retire") return { ...ev, playerId: newPlayerId };
+          if (slot.kind === "callbackReturning") return { ...ev, returningId: newPlayerId };
+          return ev;
+        });
+        return { ...inn, events };
+      });
+      return { ...m, innings };
+    }));
+  };
+
   const currentMatch = matches.find((m) => m.id === currentMatchId) || null;
 
   if (!loaded) {
@@ -2889,8 +3137,9 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
         {screen === "playerStats" && <PlayerStatsScreen matches={matches} teams={teams} go={go} />}
         {screen === "matchHistory" && <MatchHistoryScreen matches={matches} teams={teams} go={go} />}
         {screen === "newMatch" && <NewMatchScreen teams={teams} tournaments={tournaments} createMatch={createMatch} presetCategory={presetCategory} isScorer={isScorer} go={go} />}
-        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} endMatchNow={isAdmin ? endMatchNow : null} isScorer={isScorer} go={go} />}
-        {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} updateMatchWeeklyInfo={isScorer ? updateMatchWeeklyInfo : null} go={go} />}
+        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} endMatchNow={isAdmin ? endMatchNow : null} isAdmin={isAdmin} isScorer={isScorer} go={go} />}
+        {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} updateMatchWeeklyInfo={isScorer ? updateMatchWeeklyInfo : null} isAdmin={isAdmin} go={go} />}
+        {screen === "fixPlayer" && <FixPlayerScreen match={currentMatch} teams={teams} fixIdentitySlot={isAdmin ? fixIdentitySlot : () => {}} go={go} />}
       </div>
     </div>
   );

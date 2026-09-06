@@ -74,6 +74,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   let freeHit = false;
   const maxWickets = Math.max(squadLen - 1, 1);
   let overStartEventIndex = [0]; // overStartEventIndex[N] = event index where over N began
+  let bowlerOvers = {}; // bowlerId -> array of 1-indexed over numbers they bowled
 
   const ensureBat = (id) => { if (id && !batsmanStats[id]) batsmanStats[id] = { runs: 0, balls: 0, fours: 0, sixes: 0, out: false, howOut: null, fielder: null }; };
   const ensureBowl = (id) => { if (id && !bowlerStats[id]) bowlerStats[id] = { balls: 0, runs: 0, wickets: 0 }; };
@@ -192,6 +193,9 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
         if (overRunsAcc === 0) maidens[bowler] = (maidens[bowler] || 0) + 1;
         overRunsAcc = 0;
         overStartEventIndex.push(evIdx + 1);
+        const overNum = legalBalls / 6;
+        if (!bowlerOvers[bowler]) bowlerOvers[bowler] = [];
+        bowlerOvers[bowler].push(overNum);
         const t = striker; striker = nonStriker; nonStriker = t;
       }
 
@@ -211,6 +215,13 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   }
 
   const oversStr = `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`;
+  // Include the over currently in progress (not yet a full 6 legal balls)
+  // in that bowler's list too, so it shows up immediately as they bowl it.
+  if (legalBalls % 6 !== 0 && bowler) {
+    const inProgressOverNum = Math.floor(legalBalls / 6) + 1;
+    if (!bowlerOvers[bowler]) bowlerOvers[bowler] = [];
+    if (!bowlerOvers[bowler].includes(inProgressOverNum)) bowlerOvers[bowler].push(inProgressOverNum);
+  }
   // Undo is allowed back to the start of the over before the current one --
   // e.g. if we're partway through over 5, undo can reach back to the first
   // ball of over 4, but no further. Keeps a stray tap from wiping the innings.
@@ -218,7 +229,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   return {
     striker, nonStriker, bowler, lastOverBowler, legalBalls, totalRuns, wickets,
     batsmanStats, bowlerStats, outPlayers, battingOrder, retiredPlayers, awaitingBowler, awaitingBatsman,
-    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships, fallOfWickets, undoBoundaryIndex,
+    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships, fallOfWickets, undoBoundaryIndex, bowlerOvers,
   };
 }
 
@@ -1950,9 +1961,13 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
             </div>
             {Object.entries(state.bowlerStats).map(([id, s]) => {
               const name = bowlingTeam.players.find((p) => p.id === id)?.name;
+              const oversList = state.bowlerOvers[id] || [];
               return (
                 <div key={id} className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
-                  <div className="f-ui truncate" style={{ color: C.ink }}>{name}{id === state.bowler ? " *" : ""}</div>
+                  <div className="f-ui truncate" style={{ color: C.ink }}>
+                    {name}{id === state.bowler ? " *" : ""}
+                    {oversList.length > 0 && <span className="block text-[10px]" style={{ color: C.inkSoft }}>Overs: {oversList.join(", ")}</span>}
+                  </div>
                   <div className="text-center">{Math.floor(s.balls / 6)}.{s.balls % 6}</div>
                   <div className="text-center">{s.runs}</div>
                   <div className="text-center font-semibold">{s.wickets}</div>
@@ -1994,6 +2009,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           <span className="f-ui">Bowling: </span>{bowlingName(state.bowler)} — {state.bowlerStats[state.bowler] ? `${Math.floor(state.bowlerStats[state.bowler].balls/6)}.${state.bowlerStats[state.bowler].balls%6}-${state.bowlerStats[state.bowler].runs}-${state.bowlerStats[state.bowler].wickets}` : "0.0-0-0"}
           {" "}(econ {fmtEcon(state.bowlerStats[state.bowler]?.runs || 0, state.bowlerStats[state.bowler]?.balls || 0)})
           {match.maxOversPerBowler && <span> · limit {match.maxOversPerBowler} ov</span>}
+          {(state.bowlerOvers[state.bowler] || []).length > 0 && <span> · overs {state.bowlerOvers[state.bowler].join(", ")}</span>}
         </div>
         {isScorer ? (
           <button onClick={() => setKeeperModal(true)} className="w-full flex items-center justify-between px-3 py-1.5 f-ui text-xs stamp-btn" style={{ borderTop: `1px solid ${C.line}`, color: C.inkSoft }}>
@@ -2538,9 +2554,13 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, go })
             </div>
             {Object.entries(st.bowlerStats).map(([id, s]) => {
               const name = bowlT.players.find((p) => p.id === id)?.name;
+              const oversList = st.bowlerOvers[id] || [];
               return (
                 <div key={id} className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
-                  <div className="f-ui truncate" style={{ color: C.ink }}>{name}</div>
+                  <div className="f-ui truncate" style={{ color: C.ink }}>
+                    {name}
+                    {oversList.length > 0 && <span className="block text-[10px]" style={{ color: C.inkSoft }}>Overs: {oversList.join(", ")}</span>}
+                  </div>
                   <div className="text-center">{Math.floor(s.balls / 6)}.{s.balls % 6}</div>
                   <div className="text-center">{s.runs}</div>
                   <div className="text-center font-semibold">{s.wickets}</div>

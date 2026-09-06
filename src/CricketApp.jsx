@@ -70,6 +70,8 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   let partnerRuns = 0;
   let currentPair = (striker && nonStriker) ? [striker, nonStriker] : null;
   let overBalls = [];
+  let overHistory = []; // { overNumber, bowlerId, balls, runs, wickets, inProgress? }
+  let overTotalRunsAcc = 0, overWicketsAcc = 0;
   let awaitingBowler = false, awaitingBatsman = false, complete = false, completeReason = "";
   let freeHit = false;
   const maxWickets = Math.max(squadLen - 1, 1);
@@ -182,6 +184,8 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
       else if (extraType === "deadball") symbol = "Db";
       else symbol = runsBat === 0 ? "•" : String(runsBat);
       overBalls.push(symbol);
+      overTotalRunsAcc += runsBat + extraRuns;
+      if (wicketFlag) overWicketsAcc++;
 
       if (extraType === "noball") freeHit = true;
       else if (extraType !== "wide" && extraType !== "deadball") freeHit = false;
@@ -196,6 +200,8 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
         const overNum = legalBalls / 6;
         if (!bowlerOvers[bowler]) bowlerOvers[bowler] = [];
         bowlerOvers[bowler].push(overNum);
+        overHistory.push({ overNumber: overNum, bowlerId: bowler, balls: [...overBalls], runs: overTotalRunsAcc, wickets: overWicketsAcc });
+        overTotalRunsAcc = 0; overWicketsAcc = 0;
         const t = striker; striker = nonStriker; nonStriker = t;
       }
 
@@ -221,6 +227,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
     const inProgressOverNum = Math.floor(legalBalls / 6) + 1;
     if (!bowlerOvers[bowler]) bowlerOvers[bowler] = [];
     if (!bowlerOvers[bowler].includes(inProgressOverNum)) bowlerOvers[bowler].push(inProgressOverNum);
+    overHistory.push({ overNumber: inProgressOverNum, bowlerId: bowler, balls: [...overBalls], runs: overTotalRunsAcc, wickets: overWicketsAcc, inProgress: true });
   }
   // Undo is allowed back to the start of the over before the current one --
   // e.g. if we're partway through over 5, undo can reach back to the first
@@ -229,7 +236,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
   return {
     striker, nonStriker, bowler, lastOverBowler, legalBalls, totalRuns, wickets,
     batsmanStats, bowlerStats, outPlayers, battingOrder, retiredPlayers, awaitingBowler, awaitingBatsman,
-    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships, fallOfWickets, undoBoundaryIndex, bowlerOvers,
+    complete, completeReason, oversStr, maxWickets, overBalls, nextBallFreeHit: freeHit, extras, fieldingCredits, maidens, partnerships, fallOfWickets, undoBoundaryIndex, bowlerOvers, overHistory,
   };
 }
 
@@ -1927,13 +1934,44 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
       )}
 
       <div className="mx-4 mt-3 flex gap-2">
-        {[["live", "Live"], ["scorecard", "Full Scorecard"]].map(([v, label]) => (
+        {[["live", "Live"], ["scorecard", "Full Scorecard"], ["overs", "Over Details"]].map(([v, label]) => (
           <button key={v} onClick={() => setLiveTab(v)} className="flex-1 f-ui text-xs py-2 rounded-md stamp-btn"
             style={{ background: liveTab === v ? C.pitch : C.paper, color: liveTab === v ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
             {label}
           </button>
         ))}
       </div>
+
+      {liveTab === "overs" && (
+        <div className="mx-4 mt-4 space-y-2">
+          {state.overHistory.length === 0 && (
+            <div className="text-center py-8 f-ui text-sm" style={{ color: C.inkSoft }}>No overs bowled yet.</div>
+          )}
+          {[...state.overHistory].reverse().map((ov) => {
+            const bowlerNm = bowlingTeam.players.find((p) => p.id === ov.bowlerId)?.name || "—";
+            return (
+              <div key={ov.overNumber} className="rounded-xl p-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="f-display text-sm" style={{ color: C.ink }}>Over {ov.overNumber}{ov.inProgress ? " (in progress)" : ""}</span>
+                  <span className="f-ui text-xs" style={{ color: C.inkSoft }}>{bowlerNm}</span>
+                </div>
+                <div className="flex gap-1.5 flex-wrap mb-2">
+                  {ov.balls.map((b, i) => (
+                    <div key={i} className="f-mono text-xs w-7 h-7 rounded-full flex items-center justify-center"
+                      style={{ background: (b === "W" || b.startsWith("W+")) ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: (b === "W" || b.startsWith("W+")) ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
+                      {b}
+                    </div>
+                  ))}
+                </div>
+                <div className="f-ui text-xs" style={{ color: C.inkSoft }}>
+                  <span className="f-mono font-semibold" style={{ color: C.pitch }}>{ov.runs}</span> run{ov.runs !== 1 ? "s" : ""}
+                  {ov.wickets > 0 && <span> · <span className="f-mono font-semibold" style={{ color: C.ball }}>{ov.wickets}</span> wicket{ov.wickets !== 1 ? "s" : ""}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {liveTab === "scorecard" && (
         <div className="mx-4 mt-4">

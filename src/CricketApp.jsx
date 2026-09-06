@@ -381,6 +381,19 @@ function ExtrasBreakdown({ extras }) {
   );
 }
 
+// Resolves a team for a specific match's roster -- if this match captured a
+// snapshot of that team's players/keeper at the time it was played, that
+// frozen roster is used (so later edits to the team never rewrite history).
+// Falls back to the live team for matches created before this existed.
+function resolveTeam(match, teamId, teams) {
+  const live = teams.find((t) => t.id === teamId);
+  const snapshot = (match.teamASnapshot && match.teamASnapshot.id === teamId) ? match.teamASnapshot
+    : (match.teamBSnapshot && match.teamBSnapshot.id === teamId) ? match.teamBSnapshot
+    : null;
+  if (!snapshot) return live || { id: teamId, name: "Unknown", color: "#999", keeperId: null, players: [] };
+  return { ...(live || { id: teamId, name: "Unknown", color: "#999" }), players: snapshot.players, keeperId: snapshot.keeperId };
+}
+
 function computeMatchAwards(match, teams) {
   const battingTotals = {};
   const bowlingTotals = {};
@@ -388,8 +401,8 @@ function computeMatchAwards(match, teams) {
   let bestPartnership = null;
 
   match.innings.forEach((inn) => {
-    const bt = teams.find((t) => t.id === inn.battingTeamId);
-    const bowlT = teams.find((t) => t.id === inn.bowlingTeamId);
+    const bt = resolveTeam(match, inn.battingTeamId, teams);
+    const bowlT = resolveTeam(match, inn.bowlingTeamId, teams);
     if (!bt || !bowlT) return;
     const st = computeInningsState(inn, bt.players.length, match.oversLimit, inn.target);
 
@@ -473,8 +486,8 @@ function computeCareerStats(matches, teams, filterType, filterKey) {
   completed.forEach((match) => {
     const awards = computeMatchAwards(match, teams);
     match.innings.forEach((inn) => {
-      const bt = teams.find((t) => t.id === inn.battingTeamId);
-      const bowlT = teams.find((t) => t.id === inn.bowlingTeamId);
+      const bt = resolveTeam(match, inn.battingTeamId, teams);
+      const bowlT = resolveTeam(match, inn.bowlingTeamId, teams);
       if (!bt || !bowlT) return;
       const st = computeInningsState(inn, bt.players.length, match.oversLimit, inn.target);
 
@@ -796,7 +809,7 @@ function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, use
           <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Live</div>
           {liveMatches.map((m) => {
             const inn = m.innings[m.currentInnings];
-            const squadLen = teams.find((t) => t.id === inn.battingTeamId)?.players.length || 2;
+            const squadLen = resolveTeam(m, inn.battingTeamId, teams).players.length || 2;
             const st = computeInningsState(inn, squadLen, m.oversLimit, m.currentInnings === 1 ? inn.target : null);
             return (
               <button key={m.id} onClick={() => { go("live"); go.setMatch(m.id); }}
@@ -1289,26 +1302,45 @@ function buildIdentitySlots(match) {
   return slots;
 }
 
-function FixPlayerScreen({ match, teams, fixIdentitySlot, go }) {
+function FixPlayerScreen({ match, teams, fixIdentitySlot, renamePlayerInMatch, go }) {
   const [editingSlot, setEditingSlot] = useState(null);
+  const [renamingPlayer, setRenamingPlayer] = useState(null); // { id, name }
+  const [renameText, setRenameText] = useState("");
 
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
   const slots = buildIdentitySlots(match);
   const nameFor = (inningsIdx, team, playerId) => {
     const inn = match.innings[inningsIdx];
     const teamId = team === "batting" ? inn.battingTeamId : inn.bowlingTeamId;
-    return teams.find((t) => t.id === teamId)?.players.find((p) => p.id === playerId)?.name || "—";
+    return resolveTeam(match, teamId, teams).players.find((p) => p.id === playerId)?.name || "—";
   };
   const rosterFor = (inningsIdx, team) => {
     const inn = match.innings[inningsIdx];
     const teamId = team === "batting" ? inn.battingTeamId : inn.bowlingTeamId;
-    return teams.find((t) => t.id === teamId)?.players || [];
+    return resolveTeam(match, teamId, teams).players || [];
   };
+
+  const teamARoster = resolveTeam(match, match.teamAId, teams);
+  const teamBRoster = resolveTeam(match, match.teamBId, teams);
 
   return (
     <div className="min-h-full pb-8" style={{ background: C.cream }}>
       <TopBar title="Fix Player" onBack={() => go("home")} />
       <div className="p-4">
+        <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Rename a Player</div>
+        <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>
+          Fixes a typo or alias for this specific match only — like the one it was played under, wherever they were registered as a guest or from the pool. Doesn't touch the team's saved roster or any other match.
+        </div>
+        <div className="rounded-xl overflow-hidden mb-6" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+          {[...teamARoster.players, ...teamBRoster.players].map((p, i) => (
+            <div key={p.id} className="flex items-center justify-between px-4 py-2.5" style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
+              <span className="f-ui text-sm" style={{ color: C.ink }}>{p.name}</span>
+              <button onClick={() => { setRenamingPlayer(p); setRenameText(p.name); }} className="f-ui text-xs font-semibold stamp-btn" style={{ color: C.pitch }}>Rename</button>
+            </div>
+          ))}
+        </div>
+
+        <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Fix a Wrongly-Attributed Moment</div>
         <div className="f-ui text-xs mb-4" style={{ color: C.inkSoft }}>
           Every moment a specific player's identity got recorded in this match. Fixing one here corrects every run, ball, and dismissal that followed it automatically — totals and overs don't change, only whose name they're filed under.
         </div>
@@ -1324,6 +1356,15 @@ function FixPlayerScreen({ match, teams, fixIdentitySlot, go }) {
           ))}
         </div>
       </div>
+
+      {renamingPlayer && (
+        <Modal title="Rename Player" onClose={() => setRenamingPlayer(null)}>
+          <Field label="Name for this match">
+            <TextInput value={renameText} onChange={(e) => setRenameText(e.target.value)} placeholder="Full name" />
+          </Field>
+          <Btn className="w-full" disabled={!renameText.trim()} onClick={() => { renamePlayerInMatch(match.id, renamingPlayer.id, renameText.trim()); setRenamingPlayer(null); }}>Save</Btn>
+        </Modal>
+      )}
 
       {editingSlot && (
         <Modal title="Who was it really?" onClose={() => setEditingSlot(null)}>
@@ -1954,7 +1995,7 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isSco
 
 /* ---------------------------------- LIVE SCORING ---------------------------------- */
 
-function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, undoIntoPreviousInnings, continueIfInningsComplete, deleteMatch, updateMatchOvers, endMatchNow, isAdmin, isScorer, go }) {
+function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, undoIntoPreviousInnings, continueIfInningsComplete, deleteMatch, updateMatchOvers, endMatchNow, addPlayerToMatchTeam, isAdmin, isScorer, go }) {
   const [editOversModal, setEditOversModal] = useState(false);
   const [oversInput, setOversInput] = useState(0);
   const [liveTab, setLiveTab] = useState("live"); // 'live' | 'scorecard'
@@ -1977,8 +2018,8 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
 
   const idx = match.currentInnings;
   const innings = match.innings[idx];
-  const battingTeam = teams.find((t) => t.id === innings.battingTeamId);
-  const bowlingTeam = teams.find((t) => t.id === innings.bowlingTeamId);
+  const battingTeam = resolveTeam(match, innings.battingTeamId, teams);
+  const bowlingTeam = resolveTeam(match, innings.bowlingTeamId, teams);
   const target = idx === 1 ? innings.target : null;
   const state = computeInningsState(innings, battingTeam.players.length, match.oversLimit, target);
 
@@ -2021,6 +2062,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
         onConfirm={(striker, nonStriker, bowler) => setOpeners(idx, { striker, nonStriker, bowler })}
         go={go} target={target} inningsIdx={idx}
         onUndoPreviousInnings={(idx > 0 && isScorer) ? () => undoIntoPreviousInnings(match.id) : null}
+        matchId={match.id} addPlayerToMatchTeam={addPlayerToMatchTeam}
       />
     );
   }
@@ -2120,7 +2162,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
 
       {idx === 1 && (() => {
         const inn1 = match.innings[0];
-        const team1 = teams.find((t) => t.id === inn1.battingTeamId);
+        const team1 = resolveTeam(match, inn1.battingTeamId, teams);
         const st1 = computeInningsState(inn1, team1.players.length, match.oversLimit, null);
         const oversSoFar = Math.floor(state.legalBalls / 6);
         const inn1Points = computeCumulativePoints(st1.overHistory);
@@ -2326,14 +2368,34 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
             end = state.nonStriker === lastOutId ? "nonstriker" : "striker";
           }
           appendEvent(idx, { type: "newBatsman", playerId: id, replacingEnd: end });
-        }} />
+        }} onAddNew={addPlayerToMatchTeam ? (name) => {
+          const newId = addPlayerToMatchTeam(match.id, battingTeam.id, name);
+          const lastVacancy = [...innings.events].reverse().find((e) => (e.type === "ball" && e.wicket) || e.type === "retire");
+          let end;
+          if (lastVacancy?.type === "retire") end = lastVacancy.end;
+          else {
+            const lastOutId = state.outPlayers[state.outPlayers.length - 1];
+            end = state.nonStriker === lastOutId ? "nonstriker" : "striker";
+          }
+          appendEvent(idx, { type: "newBatsman", playerId: newId, replacingEnd: end });
+        } : null} />
       ) : state.awaitingBowler ? (
-        <SelectPrompt title="Select bowler for next over" options={availableBowlers} onPick={(id) => appendEvent(idx, { type: "newBowler", playerId: id })} />
+        <SelectPrompt title="Select bowler for next over" options={availableBowlers}
+          onPick={(id) => appendEvent(idx, { type: "newBowler", playerId: id })}
+          onAddNew={addPlayerToMatchTeam ? (name) => {
+            const newId = addPlayerToMatchTeam(match.id, bowlingTeam.id, name);
+            appendEvent(idx, { type: "newBowler", playerId: newId });
+          } : null}
+        />
       ) : keeperIsBowling ? (
         <SelectPrompt
           title={`${effectiveKeeperName} is bowling — who's keeping?`}
           options={bowlingTeam.players.filter((p) => p.id !== state.bowler)}
           onPick={(id) => setKeeperOverride(idx, id)}
+          onAddNew={addPlayerToMatchTeam ? (name) => {
+            const newId = addPlayerToMatchTeam(match.id, bowlingTeam.id, name);
+            setKeeperOverride(idx, newId);
+          } : null}
         />
       ) : (
         <div className="mx-4 mt-3">
@@ -2574,11 +2636,35 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
   );
 }
 
-function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsIdx, onUndoPreviousInnings }) {
+function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsIdx, onUndoPreviousInnings, matchId, addPlayerToMatchTeam }) {
   const [striker, setStriker] = useState("");
   const [nonStriker, setNonStriker] = useState("");
   const [bowler, setBowler] = useState("");
+  const [addingFor, setAddingFor] = useState(null); // 'striker' | 'nonStriker' | 'bowler' | null
+  const [newName, setNewName] = useState("");
   const ready = striker && nonStriker && striker !== nonStriker && bowler;
+
+  const confirmAdd = () => {
+    if (!newName.trim() || !addingFor) return;
+    const teamId = addingFor === "bowler" ? bowlingTeam.id : battingTeam.id;
+    const newId = addPlayerToMatchTeam(matchId, teamId, newName.trim());
+    if (addingFor === "striker") setStriker(newId);
+    else if (addingFor === "nonStriker") setNonStriker(newId);
+    else setBowler(newId);
+    setNewName(""); setAddingFor(null);
+  };
+
+  const AddPlayerRow = ({ field }) => addPlayerToMatchTeam && (
+    addingFor === field ? (
+      <div className="flex gap-2 mt-1.5">
+        <TextInput value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Player name" />
+        <Btn size="sm" disabled={!newName.trim()} onClick={confirmAdd}>Add</Btn>
+      </div>
+    ) : (
+      <button onClick={() => { setAddingFor(field); setNewName(""); }} className="f-ui text-xs font-semibold mt-1" style={{ color: C.pitch }}>+ Add a player for this match</button>
+    )
+  );
+
   return (
     <div className="min-h-full" style={{ background: C.cream }}>
       <TopBar title={inningsIdx === 1 ? "Second Innings" : "Openers"} onBack={() => go("home")} />
@@ -2599,18 +2685,21 @@ function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsI
             <option value="">Select</option>
             {battingTeam.players.map((p) => <option key={p.id} value={p.id} disabled={p.id === nonStriker}>{p.name}</option>)}
           </Select>
+          <AddPlayerRow field="striker" />
         </Field>
         <Field label="Non-striker">
           <Select value={nonStriker} onChange={setNonStriker}>
             <option value="">Select</option>
             {battingTeam.players.map((p) => <option key={p.id} value={p.id} disabled={p.id === striker}>{p.name}</option>)}
           </Select>
+          <AddPlayerRow field="nonStriker" />
         </Field>
         <Field label={`Opening bowler (${bowlingTeam.name})`}>
           <Select value={bowler} onChange={setBowler}>
             <option value="">Select</option>
             {bowlingTeam.players.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
+          <AddPlayerRow field="bowler" />
         </Field>
         <Btn className="w-full text-center block mt-2" disabled={!ready} onClick={() => onConfirm(striker, nonStriker, bowler)}>Start Innings</Btn>
       </div>
@@ -2618,7 +2707,9 @@ function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsI
   );
 }
 
-function SelectPrompt({ title, options, onPick }) {
+function SelectPrompt({ title, options, onPick, onAddNew }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [newName, setNewName] = useState("");
   return (
     <div className="mx-4 mt-3 rounded-xl p-4" style={{ background: C.gold + "22", border: `1.5px solid ${C.gold}` }}>
       <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>{title}</div>
@@ -2630,6 +2721,17 @@ function SelectPrompt({ title, options, onPick }) {
         ))}
         {options.length === 0 && <div className="f-ui text-xs" style={{ color: C.inkSoft }}>No eligible players available.</div>}
       </div>
+      {onAddNew && !showAdd && (
+        <button onClick={() => setShowAdd(true)} className="w-full text-center f-ui text-xs font-semibold mt-2 px-3 py-2 rounded-md stamp-btn" style={{ color: C.pitch, border: `1.5px dashed ${C.line}` }}>
+          + Add a player for this match
+        </button>
+      )}
+      {onAddNew && showAdd && (
+        <div className="flex gap-2 mt-2">
+          <TextInput value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Player name" />
+          <Btn size="sm" disabled={!newName.trim()} onClick={() => { onAddNew(newName.trim()); setNewName(""); setShowAdd(false); }}>Add</Btn>
+        </div>
+      )}
     </div>
   );
 }
@@ -2660,8 +2762,8 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
   };
 
   const inningsData = match.innings.map((inn, i) => {
-    const bt = teams.find((t) => t.id === inn.battingTeamId);
-    const bowlT = teams.find((t) => t.id === inn.bowlingTeamId);
+    const bt = resolveTeam(match, inn.battingTeamId, teams);
+    const bowlT = resolveTeam(match, inn.bowlingTeamId, teams);
     const target = i === 1 ? inn.target : null;
     const st = computeInningsState(inn, bt.players.length, match.oversLimit, target);
     const oversFaced = st.legalBalls / 6;
@@ -2953,6 +3055,11 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
   go.setMatch = (id) => setCurrentMatchId(id);
   go.setPresetCategory = (c) => setPresetCategory(c);
 
+  const snapshotTeam = (teamId) => {
+    const t = teams.find((tm) => tm.id === teamId);
+    return t ? { id: t.id, players: t.players.map((p) => ({ ...p })), keeperId: t.keeperId } : null;
+  };
+
   const createMatch = ({ tournamentId, category, weekday, matchDate, venue, teamAId, teamBId, oversLimit, maxOversPerBowler, tossWinnerId, tossChoice }) => {
     const todayISO = new Date().toISOString().slice(0, 10);
     const isFutureScheduled = category === "weekly" && matchDate && matchDate > todayISO;
@@ -2970,6 +3077,13 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       createdAt: matchDate || todayISO,
       teamAId, teamBId, oversLimit, maxOversPerBowler, tossWinnerId: isFutureScheduled ? null : tossWinnerId, tossChoice: isFutureScheduled ? null : tossChoice,
       status: isFutureScheduled ? "scheduled" : "live", currentInnings: 0,
+      // Freeze each team's roster exactly as it stands right now, so later
+      // edits to a team (adding/removing players) never change how this
+      // match's history reads. Deferred fixtures snapshot when they
+      // actually start instead, since the roster could still change
+      // between scheduling and match day.
+      teamASnapshot: isFutureScheduled ? null : snapshotTeam(teamAId),
+      teamBSnapshot: isFutureScheduled ? null : snapshotTeam(teamBId),
       innings: [innings0],
       result: null,
     };
@@ -2984,7 +3098,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       const battingFirst = tossChoice === "bat" ? tossWinnerId : (tossWinnerId === m.teamAId ? m.teamBId : m.teamAId);
       const bowlingFirst = battingFirst === m.teamAId ? m.teamBId : m.teamAId;
       const innings = m.innings.map((inn, i) => i === 0 ? { ...inn, battingTeamId: battingFirst, bowlingTeamId: bowlingFirst } : inn);
-      return { ...m, status: "live", tossWinnerId, tossChoice, innings };
+      return { ...m, status: "live", tossWinnerId, tossChoice, innings, teamASnapshot: snapshotTeam(m.teamAId), teamBSnapshot: snapshotTeam(m.teamBId) };
     }));
     setCurrentMatchId(matchId);
   };
@@ -3007,7 +3121,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
 
   const advanceInningsIfComplete = (m, inningsIdx) => {
     const inn = m.innings[inningsIdx];
-    const battingTeam = teams.find((t) => t.id === inn.battingTeamId);
+    const battingTeam = resolveTeam(m, inn.battingTeamId, teams);
     const target = inningsIdx === 1 ? inn.target : null;
     const st = computeInningsState(inn, battingTeam.players.length, m.oversLimit, target);
     if (!st.complete) return m;
@@ -3021,11 +3135,11 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       newMatch.currentInnings = 1;
     } else {
       const inn1 = m.innings[0];
-      const bt1 = teams.find((t) => t.id === inn1.battingTeamId);
+      const bt1 = resolveTeam(m, inn1.battingTeamId, teams);
       const st1 = computeInningsState(inn1, bt1.players.length, m.oversLimit, null);
-      const team1Name = teams.find((t) => t.id === inn1.battingTeamId)?.name;
+      const team1Name = bt1.name;
       const team2Id = inn.battingTeamId;
-      const team2Name = teams.find((t) => t.id === team2Id)?.name;
+      const team2Name = resolveTeam(m, team2Id, teams).name;
       let text, winnerTeamId;
       if (st.totalRuns > st1.totalRuns) {
         const wLeft = st.maxWickets - st.wickets;
@@ -3050,12 +3164,12 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       let text, winnerTeamId;
       if (m.currentInnings === 1) {
         const inn2 = m.innings[1];
-        const bt2 = teams.find((t) => t.id === inn2.battingTeamId);
+        const bt2 = resolveTeam(m, inn2.battingTeamId, teams);
         const st2 = computeInningsState(inn2, bt2.players.length, m.oversLimit, inn2.target);
         const inn1 = m.innings[0];
-        const bt1 = teams.find((t) => t.id === inn1.battingTeamId);
+        const bt1 = resolveTeam(m, inn1.battingTeamId, teams);
         const st1 = computeInningsState(inn1, bt1.players.length, m.oversLimit, null);
-        const team2Name = teams.find((t) => t.id === inn2.battingTeamId)?.name;
+        const team2Name = bt2.name;
         if (st2.totalRuns > st1.totalRuns) {
           const wLeft = st2.maxWickets - st2.wickets;
           text = `${team2Name} won by ${wLeft} wicket${wLeft !== 1 ? "s" : ""} (match ended early)`;
@@ -3150,6 +3264,52 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     }));
   };
 
+  const renamePlayerInMatch = (matchId, playerId, newName) => {
+    setMatches((ms) => ms.map((m) => {
+      if (m.id !== matchId) return m;
+      // Older matches created before roster snapshots existed won't have
+      // one yet -- build a best-effort snapshot from the live team as a
+      // starting point (better than nothing; if the player's already gone
+      // from the live roster too, there's nothing left to recover).
+      const ensureSnapshot = (existing, teamId) => {
+        if (existing) return existing;
+        const live = teams.find((t) => t.id === teamId);
+        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId } : null;
+      };
+      const teamASnapshot = ensureSnapshot(m.teamASnapshot, m.teamAId);
+      const teamBSnapshot = ensureSnapshot(m.teamBSnapshot, m.teamBId);
+      const renameInSnapshot = (snap) => {
+        if (!snap || !snap.players.some((p) => p.id === playerId)) return snap;
+        return { ...snap, players: snap.players.map((p) => p.id === playerId ? { ...p, name: newName } : p) };
+      };
+      return { ...m, teamASnapshot: renameInSnapshot(teamASnapshot), teamBSnapshot: renameInSnapshot(teamBSnapshot) };
+    }));
+  };
+
+  // Adds a one-off substitute to THIS match's own roster snapshot only --
+  // never touches the shared team in Teams management, the Regular Players
+  // pool, or any other match. Returns the new player's id synchronously so
+  // the caller can immediately select them (e.g. append a newBatsman event
+  // right after), since both updates use functional setState and correctly
+  // chain within the same handler.
+  const addPlayerToMatchTeam = (matchId, teamId, name) => {
+    const newId = uid();
+    setMatches((ms) => ms.map((m) => {
+      if (m.id !== matchId) return m;
+      const ensureSnapshot = (existing, tId) => {
+        if (existing) return existing;
+        if (tId !== teamId) return existing;
+        const live = teams.find((t) => t.id === tId);
+        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId } : null;
+      };
+      const teamASnapshot = ensureSnapshot(m.teamASnapshot, m.teamAId);
+      const teamBSnapshot = ensureSnapshot(m.teamBSnapshot, m.teamBId);
+      const addTo = (snap) => (snap && snap.id === teamId) ? { ...snap, players: [...snap.players, { id: newId, name }] } : snap;
+      return { ...m, teamASnapshot: addTo(teamASnapshot), teamBSnapshot: addTo(teamBSnapshot) };
+    }));
+    return newId;
+  };
+
   const currentMatch = matches.find((m) => m.id === currentMatchId) || null;
 
   if (!loaded) {
@@ -3168,9 +3328,9 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
         {screen === "playerStats" && <PlayerStatsScreen matches={matches} teams={teams} go={go} />}
         {screen === "matchHistory" && <MatchHistoryScreen matches={matches} teams={teams} go={go} />}
         {screen === "newMatch" && <NewMatchScreen teams={teams} tournaments={tournaments} createMatch={createMatch} presetCategory={presetCategory} isScorer={isScorer} go={go} />}
-        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} endMatchNow={isAdmin ? endMatchNow : null} isAdmin={isAdmin} isScorer={isScorer} go={go} />}
+        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} endMatchNow={isAdmin ? endMatchNow : null} addPlayerToMatchTeam={isScorer ? addPlayerToMatchTeam : null} isAdmin={isAdmin} isScorer={isScorer} go={go} />}
         {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} updateMatchWeeklyInfo={isScorer ? updateMatchWeeklyInfo : null} isAdmin={isAdmin} go={go} />}
-        {screen === "fixPlayer" && <FixPlayerScreen match={currentMatch} teams={teams} fixIdentitySlot={isAdmin ? fixIdentitySlot : () => {}} go={go} />}
+        {screen === "fixPlayer" && <FixPlayerScreen match={currentMatch} teams={teams} fixIdentitySlot={isAdmin ? fixIdentitySlot : () => {}} renamePlayerInMatch={isAdmin ? renamePlayerInMatch : () => {}} go={go} />}
       </div>
     </div>
   );

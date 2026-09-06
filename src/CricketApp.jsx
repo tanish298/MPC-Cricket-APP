@@ -1765,7 +1765,7 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isSco
 
 /* ---------------------------------- LIVE SCORING ---------------------------------- */
 
-function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, deleteMatch, updateMatchOvers, isScorer, go }) {
+function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, undoIntoPreviousInnings, continueIfInningsComplete, deleteMatch, updateMatchOvers, isScorer, go }) {
   const [editOversModal, setEditOversModal] = useState(false);
   const [oversInput, setOversInput] = useState(0);
   const [liveTab, setLiveTab] = useState("live"); // 'live' | 'scorecard'
@@ -1829,6 +1829,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
         battingTeam={battingTeam} bowlingTeam={bowlingTeam}
         onConfirm={(striker, nonStriker, bowler) => setOpeners(idx, { striker, nonStriker, bowler })}
         go={go} target={target} inningsIdx={idx}
+        onUndoPreviousInnings={(idx > 0 && isScorer) ? () => undoIntoPreviousInnings(match.id) : null}
       />
     );
   }
@@ -1931,7 +1932,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
               return (
                 <div key={id} className="grid grid-cols-[1fr,36px,36px,32px,32px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
                   <div className="f-ui truncate" style={{ color: C.ink }}>
-                    {name}{(id === state.striker || id === state.nonStriker) && !s.out ? " *" : ""}
+                    {name}{id === state.striker && !s.out ? " *" : ""}
                     <span className="block text-[10px]" style={{ color: C.inkSoft }}>{s.out ? `${s.howOut}${s.fielder ? ` (${s.fielder})` : ""}` : (state.retiredPlayers.includes(id) ? "retired hurt" : "not out")}</span>
                   </div>
                   <div className="text-center font-semibold">{s.runs}</div>
@@ -2023,6 +2024,11 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
       {!isScorer ? (
         <div className="mx-4 mt-3 rounded-xl p-4 text-center" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
           <div className="f-ui text-sm" style={{ color: C.inkSoft }}>You're watching this match live. Only a scorer can record balls.</div>
+        </div>
+      ) : state.complete ? (
+        <div className="mx-4 mt-3 rounded-xl p-4 text-center" style={{ background: C.gold + "22", border: `1.5px solid ${C.gold}` }}>
+          <div className="f-ui text-sm mb-3" style={{ color: C.ink }}>This innings is complete.</div>
+          <Btn onClick={() => continueIfInningsComplete(match.id, idx)}>Continue</Btn>
         </div>
       ) : state.awaitingBatsman ? (
         <SelectPrompt title="Select new batsman" options={availableBatsmen} onPick={(id) => {
@@ -2281,7 +2287,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
   );
 }
 
-function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsIdx }) {
+function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsIdx, onUndoPreviousInnings }) {
   const [striker, setStriker] = useState("");
   const [nonStriker, setNonStriker] = useState("");
   const [bowler, setBowler] = useState("");
@@ -2294,6 +2300,12 @@ function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsI
           <div className="rounded-lg p-3 mb-4 f-ui text-sm" style={{ background: C.gold + "22", border: `1.5px solid ${C.line}`, color: C.ink }}>
             <Target size={14} className="inline mr-1" style={{ color: C.gold }} /> Target: <span className="f-mono font-bold">{target}</span>
           </div>
+        )}
+        {onUndoPreviousInnings && (
+          <button onClick={onUndoPreviousInnings} className="w-full flex items-center justify-center gap-1.5 f-ui text-xs font-semibold py-2.5 rounded-md mb-4 stamp-btn"
+            style={{ background: C.gold + "22", color: C.gold, border: `1.5px solid ${C.gold}` }}>
+            <Undo2 size={14} /> Something wrong with the last over? Go back and fix it
+          </button>
         )}
         <Field label={`Opening striker (${battingTeam.name})`}>
           <Select value={striker} onChange={setStriker}>
@@ -2662,49 +2674,55 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     }));
   };
 
+  const advanceInningsIfComplete = (m, inningsIdx) => {
+    const inn = m.innings[inningsIdx];
+    const battingTeam = teams.find((t) => t.id === inn.battingTeamId);
+    const target = inningsIdx === 1 ? inn.target : null;
+    const st = computeInningsState(inn, battingTeam.players.length, m.oversLimit, target);
+    if (!st.complete) return m;
+
+    let newMatch = { ...m };
+    if (inningsIdx === 0) {
+      newMatch.innings = [...m.innings, {
+        battingTeamId: inn.bowlingTeamId, bowlingTeamId: inn.battingTeamId,
+        events: [], openers: { striker: null, nonStriker: null, bowler: null }, target: st.totalRuns + 1, currentKeeperId: null,
+      }];
+      newMatch.currentInnings = 1;
+    } else {
+      const inn1 = m.innings[0];
+      const bt1 = teams.find((t) => t.id === inn1.battingTeamId);
+      const st1 = computeInningsState(inn1, bt1.players.length, m.oversLimit, null);
+      const team1Name = teams.find((t) => t.id === inn1.battingTeamId)?.name;
+      const team2Id = inn.battingTeamId;
+      const team2Name = teams.find((t) => t.id === team2Id)?.name;
+      let text, winnerTeamId;
+      if (st.totalRuns > st1.totalRuns) {
+        const wLeft = st.maxWickets - st.wickets;
+        text = `${team2Name} won by ${wLeft} wicket${wLeft !== 1 ? "s" : ""}`;
+        winnerTeamId = team2Id;
+      } else if (st1.totalRuns > st.totalRuns) {
+        const diff = st1.totalRuns - st.totalRuns;
+        text = `${team1Name} won by ${diff} run${diff !== 1 ? "s" : ""}`;
+        winnerTeamId = inn1.battingTeamId;
+      } else {
+        text = "Match tied"; winnerTeamId = null;
+      }
+      newMatch.status = "completed";
+      newMatch.result = { text, winnerTeamId };
+    }
+    return newMatch;
+  };
+
   const appendEvent = (inningsIdx, event) => {
     setMatches((ms) => ms.map((m) => {
       if (m.id !== currentMatchId) return m;
       const innings = m.innings.map((inn, i) => i === inningsIdx ? { ...inn, events: [...inn.events, event] } : inn);
-      let newMatch = { ...m, innings };
-
-      const inn = innings[inningsIdx];
-      const battingTeam = teams.find((t) => t.id === inn.battingTeamId);
-      const target = inningsIdx === 1 ? inn.target : null;
-      const st = computeInningsState(inn, battingTeam.players.length, m.oversLimit, target);
-
-      if (st.complete) {
-        if (inningsIdx === 0) {
-          newMatch.innings = [...innings, {
-            battingTeamId: inn.bowlingTeamId, bowlingTeamId: inn.battingTeamId,
-            events: [], openers: { striker: null, nonStriker: null, bowler: null }, target: st.totalRuns + 1, currentKeeperId: null,
-          }];
-          newMatch.currentInnings = 1;
-        } else {
-          const inn1 = innings[0];
-          const bt1 = teams.find((t) => t.id === inn1.battingTeamId);
-          const st1 = computeInningsState(inn1, bt1.players.length, m.oversLimit, null);
-          const team1Name = teams.find((t) => t.id === inn1.battingTeamId)?.name;
-          const team2Id = inn.battingTeamId;
-          const team2Name = teams.find((t) => t.id === team2Id)?.name;
-          let text, winnerTeamId;
-          if (st.totalRuns > st1.totalRuns) {
-            const wLeft = st.maxWickets - st.wickets;
-            text = `${team2Name} won by ${wLeft} wicket${wLeft !== 1 ? "s" : ""}`;
-            winnerTeamId = team2Id;
-          } else if (st1.totalRuns > st.totalRuns) {
-            const diff = st1.totalRuns - st.totalRuns;
-            text = `${team1Name} won by ${diff} run${diff !== 1 ? "s" : ""}`;
-            winnerTeamId = inn1.battingTeamId;
-          } else {
-            text = "Match tied"; winnerTeamId = null;
-          }
-          newMatch.status = "completed";
-          newMatch.result = { text, winnerTeamId };
-        }
-      }
-      return newMatch;
+      return advanceInningsIfComplete({ ...m, innings }, inningsIdx);
     }));
+  };
+
+  const continueIfInningsComplete = (matchId, inningsIdx) => {
+    setMatches((ms) => ms.map((m) => m.id === matchId ? advanceInningsIfComplete(m, inningsIdx) : m));
   };
 
   const undoLast = (inningsIdx) => {
@@ -2712,6 +2730,26 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       if (m.id !== currentMatchId) return m;
       const innings = m.innings.map((inn, i) => i === inningsIdx ? { ...inn, events: inn.events.slice(0, -1) } : inn);
       return { ...m, innings };
+    }));
+  };
+
+  const undoIntoPreviousInnings = (matchId) => {
+    setMatches((ms) => ms.map((m) => {
+      if (m.id !== matchId) return m;
+      const prevIdx = m.currentInnings - 1;
+      if (prevIdx < 0) return m;
+      const prevInnings = m.innings[prevIdx];
+      if (!prevInnings || prevInnings.events.length === 0) return m;
+      // Pop the last event of the just-finished innings, and discard the
+      // shell of the next innings (safe: no openers chosen, no balls
+      // bowled there yet) since its target was computed from a score that
+      // may no longer be correct after this fix. Landing back on that
+      // innings' live screen lets the scorer correct it and let it
+      // naturally re-complete and re-create the next innings once ready.
+      const fixedPrevInnings = { ...prevInnings, events: prevInnings.events.slice(0, -1) };
+      const trimmedInnings = m.innings.slice(0, prevIdx + 1);
+      trimmedInnings[prevIdx] = fixedPrevInnings;
+      return { ...m, innings: trimmedInnings, currentInnings: prevIdx };
     }));
   };
 
@@ -2751,7 +2789,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
         {screen === "playerStats" && <PlayerStatsScreen matches={matches} teams={teams} go={go} />}
         {screen === "matchHistory" && <MatchHistoryScreen matches={matches} teams={teams} go={go} />}
         {screen === "newMatch" && <NewMatchScreen teams={teams} tournaments={tournaments} createMatch={createMatch} presetCategory={presetCategory} isScorer={isScorer} go={go} />}
-        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} isScorer={isScorer} go={go} />}
+        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} isScorer={isScorer} go={go} />}
         {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} updateMatchWeeklyInfo={isScorer ? updateMatchWeeklyInfo : null} go={go} />}
       </div>
     </div>

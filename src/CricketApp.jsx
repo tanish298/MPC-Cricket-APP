@@ -1776,10 +1776,11 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isSco
 
 /* ---------------------------------- LIVE SCORING ---------------------------------- */
 
-function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, undoIntoPreviousInnings, continueIfInningsComplete, deleteMatch, updateMatchOvers, isScorer, go }) {
+function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, undoIntoPreviousInnings, continueIfInningsComplete, deleteMatch, updateMatchOvers, endMatchNow, isScorer, go }) {
   const [editOversModal, setEditOversModal] = useState(false);
   const [oversInput, setOversInput] = useState(0);
   const [liveTab, setLiveTab] = useState("live"); // 'live' | 'scorecard'
+  const [confirmEndMatch, setConfirmEndMatch] = useState(false);
   const [wicketModal, setWicketModal] = useState(false);
   const [wicketType, setWicketType] = useState("Bowled");
   const [wicketWho, setWicketWho] = useState("striker");
@@ -1876,6 +1877,9 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
         <div className="flex items-center gap-3">
           {updateMatchOvers && (
             <button onClick={() => { setOversInput(match.oversLimit); setEditOversModal(true); }} className="f-ui text-[10px] text-white/80 border border-white/30 rounded px-2 py-1">Edit overs</button>
+          )}
+          {endMatchNow && (
+            <button onClick={() => setConfirmEndMatch(true)} className="f-ui text-[10px] text-white/80 border border-white/30 rounded px-2 py-1">End match</button>
           )}
           {deleteMatch && (
             <button onClick={() => setConfirmAbandon(true)} className="text-white/80"><X size={18} /></button>
@@ -2287,6 +2291,16 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           confirmLabel="Abandon"
           onCancel={() => setConfirmAbandon(false)}
           onConfirm={() => { deleteMatch(match.id); setConfirmAbandon(false); go("home"); }}
+        />
+      )}
+
+      {confirmEndMatch && (
+        <ConfirmModal
+          title="End Match Now"
+          message="This finalizes the match exactly as it stands right now — the scorecard is kept, but no more balls can be added. If the chase hasn't reached the target yet, it's recorded as No Result rather than a guessed win."
+          confirmLabel="End Match"
+          onCancel={() => setConfirmEndMatch(false)}
+          onConfirm={() => { endMatchNow(match.id); setConfirmEndMatch(false); go("summary"); }}
         />
       )}
 
@@ -2733,6 +2747,34 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     return newMatch;
   };
 
+  const endMatchNow = (matchId) => {
+    setMatches((ms) => ms.map((m) => {
+      if (m.id !== matchId) return m;
+      let text, winnerTeamId;
+      if (m.currentInnings === 1) {
+        const inn2 = m.innings[1];
+        const bt2 = teams.find((t) => t.id === inn2.battingTeamId);
+        const st2 = computeInningsState(inn2, bt2.players.length, m.oversLimit, inn2.target);
+        const inn1 = m.innings[0];
+        const bt1 = teams.find((t) => t.id === inn1.battingTeamId);
+        const st1 = computeInningsState(inn1, bt1.players.length, m.oversLimit, null);
+        const team2Name = teams.find((t) => t.id === inn2.battingTeamId)?.name;
+        if (st2.totalRuns > st1.totalRuns) {
+          const wLeft = st2.maxWickets - st2.wickets;
+          text = `${team2Name} won by ${wLeft} wicket${wLeft !== 1 ? "s" : ""} (match ended early)`;
+          winnerTeamId = inn2.battingTeamId;
+        } else {
+          text = "Match ended early — No result";
+          winnerTeamId = null;
+        }
+      } else {
+        text = "Match ended early — No result";
+        winnerTeamId = null;
+      }
+      return { ...m, status: "completed", result: { text, winnerTeamId } };
+    }));
+  };
+
   const appendEvent = (inningsIdx, event) => {
     setMatches((ms) => ms.map((m) => {
       if (m.id !== currentMatchId) return m;
@@ -2809,7 +2851,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
         {screen === "playerStats" && <PlayerStatsScreen matches={matches} teams={teams} go={go} />}
         {screen === "matchHistory" && <MatchHistoryScreen matches={matches} teams={teams} go={go} />}
         {screen === "newMatch" && <NewMatchScreen teams={teams} tournaments={tournaments} createMatch={createMatch} presetCategory={presetCategory} isScorer={isScorer} go={go} />}
-        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} isScorer={isScorer} go={go} />}
+        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} endMatchNow={isAdmin ? endMatchNow : null} isScorer={isScorer} go={go} />}
         {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} updateMatchWeeklyInfo={isScorer ? updateMatchWeeklyInfo : null} go={go} />}
       </div>
     </div>

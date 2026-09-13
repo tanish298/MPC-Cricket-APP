@@ -598,6 +598,68 @@ function computeCareerStats(matches, teams, filterType, filterKey) {
   return { players: list, topRunScorer, topWicketTaker, topFielder, bestPartnershipOverall };
 }
 
+// Turns each player's raw career numbers into a 1-5 star rating per
+// discipline, ranked against everyone else IN THIS GROUP rather than
+// against any universal cricket benchmark -- since what counts as a "good"
+// average or economy varies a lot between playing groups. A player only
+// gets a rating in a discipline once they've got enough of a sample there
+// (a few overs bowled shouldn't crown someone a 5-star bowler); otherwise
+// that discipline is simply left blank for them rather than shown as poor.
+function computeStarRatings(players) {
+  const MIN_INNINGS_BAT = 3;
+  const MIN_OVERS_BOWL = 3;
+  const MIN_MATCHES_FIELD = 3;
+
+  const ratings = {};
+  players.forEach((p) => { ratings[p.key] = { batting: null, bowling: null, fielding: null }; });
+
+  // Assigns 1-5 stars by percentile position within a list already sorted
+  // worst-first, best-last -- so it adapts automatically to this group's
+  // own spread of numbers rather than a fixed external scale.
+  const assignStars = (sortedWorstToBest, field) => {
+    const n = sortedWorstToBest.length;
+    sortedWorstToBest.forEach((p, i) => {
+      const percentile = n === 1 ? 1 : i / (n - 1);
+      const stars = Math.max(1, Math.min(5, Math.ceil(percentile * 5) || 1));
+      ratings[p.key][field] = stars;
+    });
+  };
+
+  const batEligible = players.filter((p) => p.batting.innings >= MIN_INNINGS_BAT);
+  assignStars([...batEligible].sort((a, b) => {
+    const av = a.battingAvg === Infinity ? 1e9 : a.battingAvg;
+    const bv = b.battingAvg === Infinity ? 1e9 : b.battingAvg;
+    return av - bv;
+  }), "batting");
+
+  const bowlEligible = players.filter((p) => (p.bowling.balls / 6) >= MIN_OVERS_BOWL && p.bowling.wickets > 0);
+  assignStars([...bowlEligible].sort((a, b) => (b.bowling.runs / b.bowling.wickets) - (a.bowling.runs / a.bowling.wickets)), "bowling");
+
+  const fieldEligible = players.filter((p) => p.matchesPlayed >= MIN_MATCHES_FIELD);
+  assignStars([...fieldEligible].sort((a, b) => (a.fieldingTotal / a.matchesPlayed) - (b.fieldingTotal / b.matchesPlayed)), "fielding");
+
+  return ratings; // { [playerKey]: { batting: 1-5|null, bowling: 1-5|null, fielding: 1-5|null } }
+}
+
+function StarRatingBadges({ ratings }) {
+  if (!ratings) return null;
+  const items = [
+    ratings.batting && { label: "Bat", stars: ratings.batting, color: C.pitch },
+    ratings.bowling && { label: "Bowl", stars: ratings.bowling, color: C.ball },
+    ratings.fielding && { label: "Field", stars: ratings.fielding, color: C.gold },
+  ].filter(Boolean);
+  if (items.length === 0) return null;
+  return (
+    <div className="flex gap-2.5 flex-wrap mt-0.5">
+      {items.map((it) => (
+        <span key={it.label} className="f-ui text-[10px]" style={{ color: it.color }}>
+          {it.label} {"★".repeat(it.stars)}{"☆".repeat(5 - it.stars)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /* ---------------------------------- SMALL UI ATOMS ---------------------------------- */
 
 function TopBar({ title, onBack, right }) {
@@ -1018,6 +1080,12 @@ function PlayerStatsScreen({ matches, teams, go }) {
   const monthLabel = new Date().toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const yearKey = new Date().getFullYear().toString();
   const data = computeCareerStats(matches, teams, range, range === "month" ? monthKey : range === "year" ? yearKey : null);
+  // Ratings are always based on all-time career numbers, regardless of
+  // which time range is currently selected -- so they represent a stable
+  // read on a player's overall standing, not something that flickers as
+  // you flip between Month/Year/All Time.
+  const allTimeStats = range === "all" ? data : computeCareerStats(matches, teams, "all", null);
+  const starRatings = computeStarRatings(allTimeStats.players);
 
   const sortedBatting = [...data.players].filter((p) => p.batting.innings > 0).sort((a, b) => b.batting.runs - a.batting.runs);
   const sortedBowling = [...data.players].filter((p) => p.bowling.wickets > 0 || p.bowling.innings > 0).sort((a, b) => b.bowling.wickets - a.bowling.wickets || a.economy - b.economy);
@@ -1110,7 +1178,10 @@ function PlayerStatsScreen({ matches, teams, go }) {
               {sortedBatting.map((p, i) => (
                 <button key={p.key} onClick={() => setSelectedPlayer(p.key)} className="w-full grid grid-cols-[1fr,40px,36px,36px,32px] px-3 py-2 items-center f-mono text-xs stamp-btn"
                   style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
-                  <div className="f-ui text-left truncate" style={{ color: C.ink }}>{p.name}</div>
+                  <div className="f-ui text-left truncate" style={{ color: C.ink }}>
+                    {p.name}
+                    {starRatings[p.key]?.batting && <div className="text-[9px]" style={{ color: C.pitch }}>{"★".repeat(starRatings[p.key].batting)}{"☆".repeat(5 - starRatings[p.key].batting)}</div>}
+                  </div>
                   <div className="text-center font-semibold">{p.batting.runs}</div>
                   <div className="text-center">{fmtAvg(p.battingAvg)}</div>
                   <div className="text-center">{p.strikeRate.toFixed(0)}</div>
@@ -1128,7 +1199,10 @@ function PlayerStatsScreen({ matches, teams, go }) {
               {sortedBowling.map((p, i) => (
                 <button key={p.key} onClick={() => setSelectedPlayer(p.key)} className="w-full grid grid-cols-[1fr,32px,32px,40px,32px] px-3 py-2 items-center f-mono text-xs stamp-btn"
                   style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
-                  <div className="f-ui text-left truncate" style={{ color: C.ink }}>{p.name}</div>
+                  <div className="f-ui text-left truncate" style={{ color: C.ink }}>
+                    {p.name}
+                    {starRatings[p.key]?.bowling && <div className="text-[9px]" style={{ color: C.ball }}>{"★".repeat(starRatings[p.key].bowling)}{"☆".repeat(5 - starRatings[p.key].bowling)}</div>}
+                  </div>
                   <div className="text-center font-semibold">{p.bowling.wickets}</div>
                   <div className="text-center">{p.economy.toFixed(1)}</div>
                   <div className="text-center">{p.bowling.bestRuns !== null ? `${p.bowling.bestWkt}/${p.bowling.bestRuns}` : "-"}</div>
@@ -1146,7 +1220,10 @@ function PlayerStatsScreen({ matches, teams, go }) {
               {sortedFielding.map((p, i) => (
                 <button key={p.key} onClick={() => setSelectedPlayer(p.key)} className="w-full grid grid-cols-[1fr,44px,44px,52px,40px] px-3 py-2 items-center f-mono text-xs stamp-btn"
                   style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
-                  <div className="f-ui text-left truncate" style={{ color: C.ink }}>{p.name}</div>
+                  <div className="f-ui text-left truncate" style={{ color: C.ink }}>
+                    {p.name}
+                    {starRatings[p.key]?.fielding && <div className="text-[9px]" style={{ color: C.gold }}>{"★".repeat(starRatings[p.key].fielding)}{"☆".repeat(5 - starRatings[p.key].fielding)}</div>}
+                  </div>
                   <div className="text-center">{p.fielding.catches}</div>
                   <div className="text-center">{p.fielding.runouts}</div>
                   <div className="text-center">{p.fielding.stumpings}</div>
@@ -1483,7 +1560,7 @@ function MergePlayersScreen({ playerPool, teams, matches, mergePlayerNames, go }
 
 /* ---------------------------------- TEAMS ---------------------------------- */
 
-function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, isScorer, isAdmin, go }) {
+function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, matches, isScorer, isAdmin, go }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [color, setColor] = useState(TEAM_SWATCHES[0]);
@@ -1565,12 +1642,22 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, isScorer, isA
           )}
           <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
             {playerPool.length === 0 && <div className="p-4 f-ui text-sm" style={{ color: C.inkSoft }}>Pool is empty.</div>}
-            {playerPool.map((p, i) => (
-              <div key={p.id} className="flex items-center justify-between px-4 py-2.5" style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
-                <span className="f-ui text-sm" style={{ color: C.ink }}>{p.name}</span>
-                {isScorer && <button onClick={() => removePoolName(p.id)}><X size={15} style={{ color: C.inkSoft }} /></button>}
-              </div>
-            ))}
+            {(() => {
+              const careerStats = computeCareerStats(matches, teams, "all", null);
+              const starRatings = computeStarRatings(careerStats.players);
+              return playerPool.map((p, i) => {
+                const rating = starRatings[p.name.trim().toLowerCase()];
+                return (
+                  <div key={p.id} className="flex items-center justify-between px-4 py-2.5" style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
+                    <div>
+                      <span className="f-ui text-sm" style={{ color: C.ink }}>{p.name}</span>
+                      <StarRatingBadges ratings={rating} />
+                    </div>
+                    {isScorer && <button onClick={() => removePoolName(p.id)}><X size={15} style={{ color: C.inkSoft }} /></button>}
+                  </div>
+                );
+              });
+            })()}
           </div>
         </div>
       </div>
@@ -3626,7 +3713,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       <div className="max-w-md mx-auto min-h-screen" style={{ background: C.cream, boxShadow: "0 0 40px rgba(0,0,0,0.06)" }}>
         {screen === "home" && <HomeScreen teams={teams} matches={matches} tournaments={tournaments} playerPool={playerPool} go={go} onLogout={onLogout} userEmail={userEmail} isScorer={isScorer} isAdmin={isAdmin} deleteMatch={isAdmin ? deleteMatch : null} supabaseClient={supabaseClient} linkedPlayerName={linkedPlayerName} setLinkedPlayerName={setLinkedPlayerName} />}
         {screen === "manageAccess" && <ManageAccessScreen supabaseClient={supabaseClient} userEmail={userEmail} go={go} />}
-        {screen === "teams" && <TeamsScreen teams={teams} setTeams={setTeams} playerPool={playerPool} setPlayerPool={setPlayerPool} isScorer={isScorer} isAdmin={isAdmin} go={go} />}
+        {screen === "teams" && <TeamsScreen teams={teams} setTeams={setTeams} playerPool={playerPool} setPlayerPool={setPlayerPool} matches={matches} isScorer={isScorer} isAdmin={isAdmin} go={go} />}
         {screen === "tournaments" && <TournamentsScreen teams={teams} tournaments={tournaments} setTournaments={setTournaments} matches={matches} deleteTournament={isAdmin ? deleteTournament : null} deleteMatch={isAdmin ? deleteMatch : null} isScorer={isScorer} go={go} />}
         {screen === "weekly" && <WeeklyScreen teams={teams} matches={matches} startScheduledMatch={startScheduledMatch} deleteMatch={isAdmin ? deleteMatch : null} isScorer={isScorer} go={go} />}
         {screen === "playerStats" && <PlayerStatsScreen matches={matches} teams={teams} go={go} />}

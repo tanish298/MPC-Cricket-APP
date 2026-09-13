@@ -394,6 +394,23 @@ function resolveTeam(match, teamId, teams) {
   return { ...(live || { id: teamId, name: "Unknown", color: "#999" }), players: snapshot.players, keeperId: snapshot.keeperId };
 }
 
+// Every player who has faced a ball or bowled a ball in this match so far,
+// across whichever innings have actually started -- used to decide who's
+// safe to swap between teams. Being the wicketkeeper alone doesn't count,
+// since that role can already be corrected separately at any time.
+function getInvolvedPlayerIds(match, teams) {
+  const involved = new Set();
+  match.innings.forEach((inn, i) => {
+    if (!inn.battingTeamId) return; // this innings hasn't started yet
+    const bt = resolveTeam(match, inn.battingTeamId, teams);
+    const target = i === 1 ? inn.target : null;
+    const st = computeInningsState(inn, bt.players.length, match.oversLimit, target);
+    st.battingOrder.forEach((id) => involved.add(id));
+    Object.keys(st.bowlerStats).forEach((id) => involved.add(id));
+  });
+  return involved;
+}
+
 function computeMatchAwards(match, teams) {
   const battingTotals = {};
   const bowlingTotals = {};
@@ -1384,9 +1401,89 @@ function FixPlayerScreen({ match, teams, fixIdentitySlot, renamePlayerInMatch, g
   );
 }
 
+function getAllDistinctPlayerNames(playerPool, teams, matches) {
+  const namesMap = new Map(); // lowercased key -> display name (first casing seen)
+  const add = (name) => {
+    if (!name) return;
+    const key = name.trim().toLowerCase();
+    if (key && !namesMap.has(key)) namesMap.set(key, name.trim());
+  };
+  playerPool.forEach((p) => add(p.name));
+  teams.forEach((t) => t.players.forEach((p) => add(p.name)));
+  matches.forEach((m) => {
+    if (m.teamASnapshot) m.teamASnapshot.players.forEach((p) => add(p.name));
+    if (m.teamBSnapshot) m.teamBSnapshot.players.forEach((p) => add(p.name));
+  });
+  return [...namesMap.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function MergePlayersScreen({ playerPool, teams, matches, mergePlayerNames, go }) {
+  const [checked, setChecked] = useState([]); // array of names
+  const [canonicalName, setCanonicalName] = useState("");
+  const [done, setDone] = useState(null); // last merge summary, for confirmation
+
+  const allNames = getAllDistinctPlayerNames(playerPool, teams, matches);
+
+  const toggle = (name) => {
+    setChecked((c) => {
+      const next = c.includes(name) ? c.filter((n) => n !== name) : [...c, name];
+      if (!c.includes(name) && checked.length === 0) setCanonicalName(name);
+      return next;
+    });
+  };
+
+  const canMerge = checked.length >= 2 && canonicalName.trim();
+
+  const doMerge = () => {
+    mergePlayerNames(checked, canonicalName.trim());
+    setDone({ from: checked, into: canonicalName.trim() });
+    setChecked([]);
+    setCanonicalName("");
+  };
+
+  return (
+    <div className="min-h-full pb-8" style={{ background: C.cream }}>
+      <TopBar title="Merge Duplicate Players" onBack={() => go("home")} />
+      <div className="p-4">
+        <div className="f-ui text-xs mb-4" style={{ color: C.inkSoft }}>
+          Pick two or more names below that are actually the same person, then choose which spelling should be kept. This updates the Regular Players pool, every team's roster, and every match ever played (live and completed) — runs, wickets, and history stay exactly as they were, only the name changes. The kept name is also guaranteed to end up saved in Regular Players.
+        </div>
+
+        {done && (
+          <div className="rounded-lg p-3 mb-4 f-ui text-sm" style={{ background: C.gold + "22", border: `1.5px solid ${C.gold}`, color: C.ink }}>
+            Merged {done.from.join(", ")} → <span className="font-semibold">{done.into}</span>
+          </div>
+        )}
+
+        {checked.length >= 2 && (
+          <div className="rounded-xl p-4 mb-4" style={{ background: C.paper, border: `1.5px solid ${C.gold}` }}>
+            <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Keep this spelling</div>
+            <TextInput value={canonicalName} onChange={(e) => setCanonicalName(e.target.value)} placeholder="Final name" />
+            <Btn className="w-full mt-3" disabled={!canMerge} onClick={doMerge}>Merge {checked.length} names into this one</Btn>
+          </div>
+        )}
+
+        <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Every name currently in the system</div>
+        <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+          {allNames.length === 0 && <div className="p-4 f-ui text-sm" style={{ color: C.inkSoft }}>No players found.</div>}
+          {allNames.map((name, i) => (
+            <button key={name} onClick={() => toggle(name)} className="w-full flex items-center gap-3 px-4 py-2.5 text-left stamp-btn"
+              style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}`, background: checked.includes(name) ? C.gold + "22" : "transparent" }}>
+              <div className="w-4 h-4 rounded flex items-center justify-center flex-shrink-0" style={{ border: `1.5px solid ${checked.includes(name) ? C.gold : C.line}`, background: checked.includes(name) ? C.gold : "transparent" }}>
+                {checked.includes(name) && <span className="f-ui text-[10px] text-white">✓</span>}
+              </div>
+              <span className="f-ui text-sm" style={{ color: C.ink }}>{name}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------- TEAMS ---------------------------------- */
 
-function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, isScorer, go }) {
+function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, isScorer, isAdmin, go }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [color, setColor] = useState(TEAM_SWATCHES[0]);
@@ -1453,6 +1550,12 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, isScorer, go 
         <TopBar title="Regular Players" onBack={() => setShowPoolManager(false)} />
         <div className="p-4">
           <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>Your saved pool of regulars — pick from here when building any team's roster. Removing someone here doesn't affect teams they're already on.</div>
+          {isAdmin && (
+            <button onClick={() => go("mergePlayers")} className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg mb-4 stamp-btn" style={{ background: C.gold + "22", border: `1.5px solid ${C.gold}` }}>
+              <span className="f-ui text-sm font-semibold" style={{ color: C.ink }}>Merge Duplicate Players</span>
+              <span className="f-ui text-xs" style={{ color: C.pitch }}>Fix "Yash" vs "Yash Sherathia" →</span>
+            </button>
+          )}
           {isScorer && (
             <div className="flex gap-2 mb-4">
               <TextInput placeholder="Add a regular player" value={newPoolName} onChange={(e) => setNewPoolName(e.target.value)}
@@ -1995,11 +2098,14 @@ function NewMatchScreen({ teams, tournaments, createMatch, presetCategory, isSco
 
 /* ---------------------------------- LIVE SCORING ---------------------------------- */
 
-function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, undoLast, undoIntoPreviousInnings, continueIfInningsComplete, deleteMatch, updateMatchOvers, endMatchNow, addPlayerToMatchTeam, isAdmin, isScorer, go }) {
+function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeeperOverride, undoLast, undoIntoPreviousInnings, continueIfInningsComplete, deleteMatch, updateMatchOvers, endMatchNow, addPlayerToMatchTeam, swapPlayersBetweenTeams, isAdmin, isScorer, go }) {
   const [editOversModal, setEditOversModal] = useState(false);
   const [oversInput, setOversInput] = useState(0);
   const [liveTab, setLiveTab] = useState("live"); // 'live' | 'scorecard'
   const [confirmEndMatch, setConfirmEndMatch] = useState(false);
+  const [showSwapModal, setShowSwapModal] = useState(false);
+  const [swapPickA, setSwapPickA] = useState(null);
+  const [swapPickB, setSwapPickB] = useState(null);
   const [showComparisonChart, setShowComparisonChart] = useState(false);
   const [wicketModal, setWicketModal] = useState(false);
   const [wicketType, setWicketType] = useState("Bowled");
@@ -2045,6 +2151,14 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
     }
     return true;
   });
+  // Regular Players not already on a given team's roster for this match --
+  // shown as the preferred pick when adding a substitute, so a name that
+  // already exists gets reused exactly, instead of being retyped slightly
+  // differently and quietly creating a duplicate.
+  const poolNotIn = (rosterPlayers) => {
+    const existingNames = new Set(rosterPlayers.map((p) => p.name.trim().toLowerCase()));
+    return (playerPool || []).filter((p) => !existingNames.has(p.name.trim().toLowerCase()));
+  };
 
   /* --- Openers setup --- */
   if (innings.openers.striker === null) {
@@ -2058,7 +2172,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
     }
     return (
       <OpenersForm
-        battingTeam={battingTeam} bowlingTeam={bowlingTeam}
+        battingTeam={battingTeam} bowlingTeam={bowlingTeam} playerPool={playerPool}
         onConfirm={(striker, nonStriker, bowler) => setOpeners(idx, { striker, nonStriker, bowler })}
         go={go} target={target} inningsIdx={idx}
         onUndoPreviousInnings={(idx > 0 && isScorer) ? () => undoIntoPreviousInnings(match.id) : null}
@@ -2105,6 +2219,9 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
           {isAdmin && (
             <button onClick={() => { go.setMatch(match.id); go("fixPlayer"); }} className="f-ui text-[10px] text-white/80 border border-white/30 rounded px-2 py-1">Fix player</button>
           )}
+          {swapPlayersBetweenTeams && (
+            <button onClick={() => { setSwapPickA(null); setSwapPickB(null); setShowSwapModal(true); }} className="f-ui text-[10px] text-white/80 border border-white/30 rounded px-2 py-1">Swap</button>
+          )}
           {deleteMatch && (
             <button onClick={() => setConfirmAbandon(true)} className="text-white/80"><X size={18} /></button>
           )}
@@ -2127,6 +2244,16 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
               {reqRate && <div className="f-ui text-xs" style={{ color: C.inkSoft }}>RRR {reqRate}</div>}
             </div>
           )}
+          {target === null && state.legalBalls > 0 && (() => {
+            const oversFaced = state.legalBalls / 6;
+            const projected = Math.round(state.totalRuns + (state.totalRuns / oversFaced) * (match.oversLimit - oversFaced));
+            return (
+              <div className="text-right">
+                <div className="f-ui text-xs" style={{ color: C.inkSoft }}>Projected</div>
+                <div className="f-mono text-lg font-semibold" style={{ color: C.gold }}>{projected}</div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="flex gap-1.5 mt-3 flex-wrap">
@@ -2258,6 +2385,15 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
               );
             })}
           </div>
+          {(() => {
+            const yetToBat = battingTeam.players.filter((p) => !state.battingOrder.includes(p.id));
+            return yetToBat.length > 0 ? (
+              <div className="rounded-xl overflow-hidden mb-3 px-3 py-2" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+                <div className="f-ui text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: C.inkSoft }}>Yet to Bat</div>
+                <div className="f-ui text-xs" style={{ color: C.ink }}>{yetToBat.map((p) => p.name).join(", ")}</div>
+              </div>
+            ) : null;
+          })()}
           <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
             <div className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 f-ui text-[10px] font-bold uppercase" style={{ color: C.inkSoft, borderBottom: `1px solid ${C.line}` }}>
               <div>Bowler</div><div className="text-center">O</div><div className="text-center">R</div><div className="text-center">W</div><div className="text-center">Econ</div>
@@ -2378,7 +2514,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
             end = state.nonStriker === lastOutId ? "nonstriker" : "striker";
           }
           appendEvent(idx, { type: "newBatsman", playerId: newId, replacingEnd: end });
-        } : null} />
+        } : null} poolOptions={poolNotIn(battingTeam.players)} />
       ) : state.awaitingBowler ? (
         <SelectPrompt title="Select bowler for next over" options={availableBowlers}
           onPick={(id) => appendEvent(idx, { type: "newBowler", playerId: id })}
@@ -2386,6 +2522,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
             const newId = addPlayerToMatchTeam(match.id, bowlingTeam.id, name);
             appendEvent(idx, { type: "newBowler", playerId: newId });
           } : null}
+          poolOptions={poolNotIn(bowlingTeam.players)}
         />
       ) : keeperIsBowling ? (
         <SelectPrompt
@@ -2396,6 +2533,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
             const newId = addPlayerToMatchTeam(match.id, bowlingTeam.id, name);
             setKeeperOverride(idx, newId);
           } : null}
+          poolOptions={poolNotIn(bowlingTeam.players)}
         />
       ) : (
         <div className="mx-4 mt-3">
@@ -2623,6 +2761,43 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
         />
       )}
 
+      {showSwapModal && (() => {
+        const teamARoster = resolveTeam(match, match.teamAId, teams);
+        const teamBRoster = resolveTeam(match, match.teamBId, teams);
+        const involved = getInvolvedPlayerIds(match, teams);
+        return (
+          <Modal title="Player Swap" onClose={() => setShowSwapModal(false)}>
+            <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>
+              Pick one player from each side who hasn't batted or bowled yet, then swap them between teams — for this match only. Anyone already involved is grayed out and can't be swapped, since moving them would break their own history.
+            </div>
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              {[[teamARoster, swapPickA, setSwapPickA], [teamBRoster, swapPickB, setSwapPickB]].map(([roster, pick, setPick], colIdx) => (
+                <div key={colIdx}>
+                  <div className="f-ui text-xs font-bold uppercase tracking-wide mb-1.5" style={{ color: C.inkSoft }}>{roster.name}</div>
+                  <div className="space-y-1" style={{ maxHeight: "14rem", overflowY: "auto" }}>
+                    {roster.players.map((p) => {
+                      const isInvolved = involved.has(p.id);
+                      const isPicked = pick === p.id;
+                      return (
+                        <button key={p.id} disabled={isInvolved} onClick={() => setPick(isPicked ? null : p.id)}
+                          className="w-full text-left f-ui text-xs px-2 py-2 rounded-md stamp-btn disabled:opacity-35"
+                          style={{ background: isPicked ? C.pitch : C.paper, color: isPicked ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+                          {p.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <Btn className="w-full" disabled={!swapPickA || !swapPickB} onClick={() => {
+              swapPlayersBetweenTeams(match.id, swapPickA, swapPickB);
+              setShowSwapModal(false); setSwapPickA(null); setSwapPickB(null);
+            }}>Swap</Btn>
+          </Modal>
+        );
+      })()}
+
       {editOversModal && (
         <Modal title="Edit Overs" onClose={() => setEditOversModal(false)}>
           <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>Fixes the overs-per-innings limit for this match if it was entered wrong. Applies immediately to both innings.</div>
@@ -2636,7 +2811,7 @@ function LiveScreen({ match, teams, appendEvent, setOpeners, setKeeperOverride, 
   );
 }
 
-function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsIdx, onUndoPreviousInnings, matchId, addPlayerToMatchTeam }) {
+function OpenersForm({ battingTeam, bowlingTeam, playerPool, onConfirm, go, target, inningsIdx, onUndoPreviousInnings, matchId, addPlayerToMatchTeam }) {
   const [striker, setStriker] = useState("");
   const [nonStriker, setNonStriker] = useState("");
   const [bowler, setBowler] = useState("");
@@ -2644,26 +2819,46 @@ function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsI
   const [newName, setNewName] = useState("");
   const ready = striker && nonStriker && striker !== nonStriker && bowler;
 
-  const confirmAdd = () => {
-    if (!newName.trim() || !addingFor) return;
+  const confirmAdd = (name) => {
+    if (!name.trim() || !addingFor) return;
     const teamId = addingFor === "bowler" ? bowlingTeam.id : battingTeam.id;
-    const newId = addPlayerToMatchTeam(matchId, teamId, newName.trim());
+    const newId = addPlayerToMatchTeam(matchId, teamId, name.trim());
     if (addingFor === "striker") setStriker(newId);
     else if (addingFor === "nonStriker") setNonStriker(newId);
     else setBowler(newId);
     setNewName(""); setAddingFor(null);
   };
 
-  const AddPlayerRow = ({ field }) => addPlayerToMatchTeam && (
-    addingFor === field ? (
-      <div className="flex gap-2 mt-1.5">
-        <TextInput value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Player name" />
-        <Btn size="sm" disabled={!newName.trim()} onClick={confirmAdd}>Add</Btn>
+  const AddPlayerRow = ({ field }) => {
+    if (!addPlayerToMatchTeam) return null;
+    if (addingFor !== field) {
+      return <button onClick={() => { setAddingFor(field); setNewName(""); }} className="f-ui text-xs font-semibold mt-1" style={{ color: C.pitch }}>+ Add a player for this match</button>;
+    }
+    const roster = field === "bowler" ? bowlingTeam.players : battingTeam.players;
+    const existingNames = new Set(roster.map((p) => p.name.trim().toLowerCase()));
+    const poolChoices = (playerPool || []).filter((p) => !existingNames.has(p.name.trim().toLowerCase()));
+    return (
+      <div className="mt-1.5">
+        {poolChoices.length > 0 && (
+          <>
+            <div className="f-ui text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: C.inkSoft }}>Pick from Regular Players</div>
+            <div className="space-y-1.5 mb-2" style={{ maxHeight: "9rem", overflowY: "auto" }}>
+              {poolChoices.map((p) => (
+                <button key={p.id} onClick={() => confirmAdd(p.name)} className="w-full text-left f-ui text-sm px-3 py-2 rounded-md stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}`, color: C.ink }}>
+                  {p.name}
+                </button>
+              ))}
+            </div>
+            <div className="f-ui text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: C.inkSoft }}>Or a genuinely new guest</div>
+          </>
+        )}
+        <div className="flex gap-2">
+          <TextInput value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Player name" />
+          <Btn size="sm" disabled={!newName.trim()} onClick={() => confirmAdd(newName)}>Add</Btn>
+        </div>
       </div>
-    ) : (
-      <button onClick={() => { setAddingFor(field); setNewName(""); }} className="f-ui text-xs font-semibold mt-1" style={{ color: C.pitch }}>+ Add a player for this match</button>
-    )
-  );
+    );
+  };
 
   return (
     <div className="min-h-full" style={{ background: C.cream }}>
@@ -2707,7 +2902,7 @@ function OpenersForm({ battingTeam, bowlingTeam, onConfirm, go, target, inningsI
   );
 }
 
-function SelectPrompt({ title, options, onPick, onAddNew }) {
+function SelectPrompt({ title, options, onPick, onAddNew, poolOptions }) {
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
   return (
@@ -2727,9 +2922,24 @@ function SelectPrompt({ title, options, onPick, onAddNew }) {
         </button>
       )}
       {onAddNew && showAdd && (
-        <div className="flex gap-2 mt-2">
-          <TextInput value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Player name" />
-          <Btn size="sm" disabled={!newName.trim()} onClick={() => { onAddNew(newName.trim()); setNewName(""); setShowAdd(false); }}>Add</Btn>
+        <div className="mt-2">
+          {poolOptions && poolOptions.length > 0 && (
+            <>
+              <div className="f-ui text-[10px] font-bold uppercase tracking-wide mt-1 mb-1.5" style={{ color: C.inkSoft }}>Pick from Regular Players</div>
+              <div className="space-y-1.5 mb-3" style={{ maxHeight: "9rem", overflowY: "auto" }}>
+                {poolOptions.map((p) => (
+                  <button key={p.id} onClick={() => { onAddNew(p.name); setShowAdd(false); }} className="w-full text-left f-ui text-sm px-3 py-2 rounded-md stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}`, color: C.ink }}>
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+              <div className="f-ui text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: C.inkSoft }}>Or a genuinely new guest</div>
+            </>
+          )}
+          <div className="flex gap-2">
+            <TextInput value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Player name" />
+            <Btn size="sm" disabled={!newName.trim()} onClick={() => { onAddNew(newName.trim()); setNewName(""); setShowAdd(false); }}>Add</Btn>
+          </div>
         </div>
       )}
     </div>
@@ -2941,6 +3151,15 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
               );
             })}
           </div>
+          {(() => {
+            const yetToBat = bt.players.filter((p) => !st.battingOrder.includes(p.id));
+            return yetToBat.length > 0 ? (
+              <div className="rounded-xl overflow-hidden mb-3 px-3 py-2" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+                <div className="f-ui text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: C.inkSoft }}>Yet to Bat</div>
+                <div className="f-ui text-xs" style={{ color: C.ink }}>{yetToBat.map((p) => p.name).join(", ")}</div>
+              </div>
+            ) : null;
+          })()}
           <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
             <div className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 f-ui text-[10px] font-bold uppercase" style={{ color: C.inkSoft, borderBottom: `1px solid ${C.line}` }}>
               <div>Bowler</div><div className="text-center">O</div><div className="text-center">R</div><div className="text-center">W</div><div className="text-center">Econ</div>
@@ -2958,6 +3177,33 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
                   <div className="text-center">{s.runs}</div>
                   <div className="text-center font-semibold">{s.wickets}</div>
                   <div className="text-center">{fmtEcon(s.runs, s.balls)}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="f-ui text-xs font-bold uppercase tracking-wide mt-4 mb-2" style={{ color: C.inkSoft }}>Over Details</div>
+          <div className="space-y-2">
+            {[...st.overHistory].reverse().map((ov) => {
+              const bowlerNm = bowlT.players.find((p) => p.id === ov.bowlerId)?.name || "—";
+              return (
+                <div key={ov.overNumber} className="rounded-xl p-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="f-display text-sm" style={{ color: C.ink }}>Over {ov.overNumber}</span>
+                    <span className="f-ui text-xs" style={{ color: C.inkSoft }}>{bowlerNm}</span>
+                  </div>
+                  <div className="flex gap-1.5 flex-wrap mb-2">
+                    {ov.balls.map((b, i) => (
+                      <div key={i} className="f-mono text-xs w-7 h-7 rounded-full flex items-center justify-center"
+                        style={{ background: (b === "W" || b.startsWith("W+")) ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: (b === "W" || b.startsWith("W+")) ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
+                        {b}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="f-ui text-xs" style={{ color: C.inkSoft }}>
+                    <span className="f-mono font-semibold" style={{ color: C.pitch }}>{ov.runs}</span> run{ov.runs !== 1 ? "s" : ""}
+                    {ov.wickets > 0 && <span> · <span className="f-mono font-semibold" style={{ color: C.ball }}>{ov.wickets}</span> wicket{ov.wickets !== 1 ? "s" : ""}</span>}
+                  </div>
                 </div>
               );
             })}
@@ -3310,6 +3556,64 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     return newId;
   };
 
+  // Merges duplicate spellings of the same player into one canonical name,
+  // everywhere that name could exist: the Regular Players pool, every
+  // team's current roster, and every match ever played (live or completed,
+  // via their frozen snapshots). Only ever touches the .name text -- never
+  // an id, a run, or a wicket -- so Player Stats (which groups by name)
+  // automatically combines their history the moment the spelling matches.
+  const mergePlayerNames = (namesToMerge, canonicalName) => {
+    const matchKeys = new Set(namesToMerge.map((n) => n.trim().toLowerCase()));
+    const finalName = canonicalName.trim();
+    const renameIfMatch = (name) => matchKeys.has(name.trim().toLowerCase()) ? finalName : name;
+
+    setPlayerPool((pool) => {
+      const renamed = pool.map((p) => ({ ...p, name: renameIfMatch(p.name) }));
+      const seen = new Set();
+      const deduped = [];
+      renamed.forEach((p) => {
+        const key = p.name.trim().toLowerCase();
+        if (!seen.has(key)) { seen.add(key); deduped.push(p); }
+      });
+      if (!seen.has(finalName.toLowerCase())) deduped.push({ id: uid(), name: finalName });
+      return deduped;
+    });
+
+    setTeams((ts) => ts.map((t) => ({ ...t, players: t.players.map((p) => ({ ...p, name: renameIfMatch(p.name) })) })));
+
+    setMatches((ms) => ms.map((m) => {
+      const renameSnap = (snap) => snap ? { ...snap, players: snap.players.map((p) => ({ ...p, name: renameIfMatch(p.name) })) } : snap;
+      return { ...m, teamASnapshot: renameSnap(m.teamASnapshot), teamBSnapshot: renameSnap(m.teamBSnapshot) };
+    }));
+  };
+
+  // Swaps two players between Team A and Team B for THIS match only --
+  // moves their name+id from one snapshot's roster to the other's. Only
+  // ever called with players who haven't batted or bowled yet (enforced by
+  // the UI, via getInvolvedPlayerIds), so there's nothing elsewhere in the
+  // match referencing them under their old team -- a clean, safe move.
+  const swapPlayersBetweenTeams = (matchId, playerAId, playerBId) => {
+    setMatches((ms) => ms.map((m) => {
+      if (m.id !== matchId) return m;
+      const ensureSnapshot = (existing, tId) => {
+        if (existing) return existing;
+        const live = teams.find((t) => t.id === tId);
+        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId } : null;
+      };
+      const teamASnapshot = ensureSnapshot(m.teamASnapshot, m.teamAId);
+      const teamBSnapshot = ensureSnapshot(m.teamBSnapshot, m.teamBId);
+      if (!teamASnapshot || !teamBSnapshot) return m;
+      const pA = teamASnapshot.players.find((p) => p.id === playerAId);
+      const pB = teamBSnapshot.players.find((p) => p.id === playerBId);
+      if (!pA || !pB) return m;
+      return {
+        ...m,
+        teamASnapshot: { ...teamASnapshot, players: [...teamASnapshot.players.filter((p) => p.id !== playerAId), pB] },
+        teamBSnapshot: { ...teamBSnapshot, players: [...teamBSnapshot.players.filter((p) => p.id !== playerBId), pA] },
+      };
+    }));
+  };
+
   const currentMatch = matches.find((m) => m.id === currentMatchId) || null;
 
   if (!loaded) {
@@ -3322,15 +3626,16 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       <div className="max-w-md mx-auto min-h-screen" style={{ background: C.cream, boxShadow: "0 0 40px rgba(0,0,0,0.06)" }}>
         {screen === "home" && <HomeScreen teams={teams} matches={matches} tournaments={tournaments} playerPool={playerPool} go={go} onLogout={onLogout} userEmail={userEmail} isScorer={isScorer} isAdmin={isAdmin} deleteMatch={isAdmin ? deleteMatch : null} supabaseClient={supabaseClient} linkedPlayerName={linkedPlayerName} setLinkedPlayerName={setLinkedPlayerName} />}
         {screen === "manageAccess" && <ManageAccessScreen supabaseClient={supabaseClient} userEmail={userEmail} go={go} />}
-        {screen === "teams" && <TeamsScreen teams={teams} setTeams={setTeams} playerPool={playerPool} setPlayerPool={setPlayerPool} isScorer={isScorer} go={go} />}
+        {screen === "teams" && <TeamsScreen teams={teams} setTeams={setTeams} playerPool={playerPool} setPlayerPool={setPlayerPool} isScorer={isScorer} isAdmin={isAdmin} go={go} />}
         {screen === "tournaments" && <TournamentsScreen teams={teams} tournaments={tournaments} setTournaments={setTournaments} matches={matches} deleteTournament={isAdmin ? deleteTournament : null} deleteMatch={isAdmin ? deleteMatch : null} isScorer={isScorer} go={go} />}
         {screen === "weekly" && <WeeklyScreen teams={teams} matches={matches} startScheduledMatch={startScheduledMatch} deleteMatch={isAdmin ? deleteMatch : null} isScorer={isScorer} go={go} />}
         {screen === "playerStats" && <PlayerStatsScreen matches={matches} teams={teams} go={go} />}
         {screen === "matchHistory" && <MatchHistoryScreen matches={matches} teams={teams} go={go} />}
         {screen === "newMatch" && <NewMatchScreen teams={teams} tournaments={tournaments} createMatch={createMatch} presetCategory={presetCategory} isScorer={isScorer} go={go} />}
-        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} endMatchNow={isAdmin ? endMatchNow : null} addPlayerToMatchTeam={isScorer ? addPlayerToMatchTeam : null} isAdmin={isAdmin} isScorer={isScorer} go={go} />}
+        {screen === "live" && <LiveScreen match={currentMatch} teams={teams} playerPool={playerPool} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} endMatchNow={isAdmin ? endMatchNow : null} addPlayerToMatchTeam={isScorer ? addPlayerToMatchTeam : null} swapPlayersBetweenTeams={isAdmin ? swapPlayersBetweenTeams : null} isAdmin={isAdmin} isScorer={isScorer} go={go} />}
         {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} updateMatchWeeklyInfo={isScorer ? updateMatchWeeklyInfo : null} isAdmin={isAdmin} go={go} />}
         {screen === "fixPlayer" && <FixPlayerScreen match={currentMatch} teams={teams} fixIdentitySlot={isAdmin ? fixIdentitySlot : () => {}} renamePlayerInMatch={isAdmin ? renamePlayerInMatch : () => {}} go={go} />}
+        {screen === "mergePlayers" && isAdmin && <MergePlayersScreen playerPool={playerPool} teams={teams} matches={matches} mergePlayerNames={mergePlayerNames} go={go} />}
       </div>
     </div>
   );

@@ -105,25 +105,27 @@ create policy "Users can update their own profile" on profiles
   for update using (auth.uid() = id);
 
 -- Replace the earlier open write policies on kv_store with these,
--- which only let Scorers and Admins write to the "matches" key. Team/
--- tournament/player-pool data stays editable by anyone signed in.
+-- which require a Scorer or Admin role to write ANYTHING -- matches,
+-- teams, tournaments, or the player pool. Viewers can look but not touch.
 drop policy if exists "Logged-in users can write" on kv_store;
 drop policy if exists "Logged-in users can update" on kv_store;
+drop policy if exists "Scorers and admins can write match data, others write the rest" on kv_store;
+drop policy if exists "Scorers and admins can update match data, others update the rest" on kv_store;
 
-create policy "Scorers and admins can write match data, others write the rest" on kv_store
+create policy "Scorers and admins can write" on kv_store
   for insert with check (
-    key <> 'matches' OR exists (
-      select 1 from app_roles where email = auth.email() and role in ('scorer', 'admin')
-    )
+    exists (select 1 from app_roles where email = auth.email() and role in ('scorer', 'admin'))
   );
 
-create policy "Scorers and admins can update match data, others update the rest" on kv_store
+create policy "Scorers and admins can update" on kv_store
   for update using (
-    key <> 'matches' OR exists (
-      select 1 from app_roles where email = auth.email() and role in ('scorer', 'admin')
-    )
+    exists (select 1 from app_roles where email = auth.email() and role in ('scorer', 'admin'))
   );
 ```
+
+> **Already ran the earlier version of this policy?** The `drop policy if
+> exists` lines above handle cleaning it up automatically — just run the
+> whole block again, no manual cleanup needed.
 
 > **Important — do this immediately after running the SQL above, before
 > anyone scores a match:** the `app_roles` table starts empty, so
@@ -202,6 +204,35 @@ going through an app store (which isn't free for iOS).
 Open the app, tap **Need an account? Sign up**, enter an email + password
 for each person who should have access. Everyone who signs in sees and edits
 the same shared data — teams, matches, weekly fixtures, and stats.
+
+---
+
+## 6. Open viewing + on-the-spot Scorer promotion (optional upgrade)
+
+By default, anyone who opens the app's link can watch every match — live and
+completed — without logging in at all, and without a password. On first
+visit they're asked for their name (just a friendly label, no security
+attached to it). You (Admin) can then see everyone currently on the app from
+**Home → Manage Access → Who's Here**, and promote any one of them to Scorer
+right from there — no password is ever created or shared; it's a private
+code tied to that person's device, invisible to them. Your own Admin login
+is completely unchanged.
+
+To turn this on:
+
+1. In the Supabase dashboard, go to **Authentication → Settings** and turn
+   on **"Allow anonymous sign-ins."**
+2. In **SQL Editor**, run [`supabase-open-viewing-setup.sql`](./supabase-open-viewing-setup.sql)
+   once (it's additive — safe to run after the setup above, and safe to
+   re-run).
+
+If you skip this step, the app falls back to requiring everyone to log in,
+exactly as it did before.
+
+Completed matches also get a **Share** icon (top right of the Scorecard
+screen) that opens your phone's normal share sheet — handy for dropping a
+direct link to that match straight into WhatsApp. Whoever opens it sees that
+scorecard immediately, no login needed.
 
 ---
 

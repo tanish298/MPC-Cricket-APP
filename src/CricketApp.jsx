@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   ArrowLeft, Plus, Users, Trophy, X, Undo2, Target,
-  Play, Check, ChevronRight, Flag, Circle as CircleIcon, Shield, Calendar, MapPin, BarChart3, Award
+  Play, Check, ChevronRight, Flag, Circle as CircleIcon, Shield, Calendar, MapPin, BarChart3, Award, Share2
 } from "lucide-react";
 
 /* ---------------------------------- THEME ---------------------------------- */
@@ -754,7 +754,7 @@ function ConfirmModal({ title, message, confirmLabel = "Delete", onConfirm, onCa
 
 /* ---------------------------------- HOME ---------------------------------- */
 
-function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, userEmail, deleteMatch, isScorer, isAdmin, supabaseClient, linkedPlayerName, setLinkedPlayerName }) {
+function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, userEmail, deleteMatch, isScorer, isAdmin, supabaseClient, linkedPlayerName, setLinkedPlayerName, isAnonymous, viewerName, onRequestLogin }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [assignedRoles, setAssignedRoles] = useState([]);
   const [namePicker, setNamePicker] = useState(false);
@@ -789,7 +789,16 @@ function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, use
             <div className="f-display text-3xl text-white">MPC Cricket App</div>
             <div className="f-ui text-white/70 text-sm mt-1">Teams, tournaments, and ball-by-ball scoring.</div>
           </div>
-          {onLogout && (
+          {isAnonymous ? (
+            <div className="text-right">
+              <button onClick={onRequestLogin} className="f-ui text-[11px] text-white/70 border border-white/30 rounded-md px-2.5 py-1.5 mt-1 stamp-btn">
+                Log in as Scorer
+              </button>
+              <div className="f-ui text-[10px] mt-1" style={{ color: isScorer ? "#D8B56A" : "rgba(255,255,255,0.5)" }}>
+                {isScorer ? "Scorer" : "Viewer"}{viewerName ? ` · ${viewerName}` : ""}
+              </div>
+            </div>
+          ) : onLogout && (
             <div className="text-right">
               <button onClick={onLogout} className="f-ui text-[11px] text-white/70 border border-white/30 rounded-md px-2.5 py-1.5 mt-1 stamp-btn" title={userEmail || ""}>
                 Log out
@@ -1180,7 +1189,10 @@ function PlayerStatsScreen({ matches, teams, go }) {
                   style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
                   <div className="f-ui text-left truncate" style={{ color: C.ink }}>
                     {p.name}
-                    {starRatings[p.key]?.batting && <div className="text-[9px]" style={{ color: C.pitch }}>{"★".repeat(starRatings[p.key].batting)}{"☆".repeat(5 - starRatings[p.key].batting)}</div>}
+                    <div className="text-[9px]" style={{ color: C.inkSoft }}>
+                      {p.matchesPlayed} match{p.matchesPlayed !== 1 ? "es" : ""}
+                      {starRatings[p.key]?.batting && <span style={{ color: C.pitch }}> · {"★".repeat(starRatings[p.key].batting)}{"☆".repeat(5 - starRatings[p.key].batting)}</span>}
+                    </div>
                   </div>
                   <div className="text-center font-semibold">{p.batting.runs}</div>
                   <div className="text-center">{fmtAvg(p.battingAvg)}</div>
@@ -1201,7 +1213,10 @@ function PlayerStatsScreen({ matches, teams, go }) {
                   style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
                   <div className="f-ui text-left truncate" style={{ color: C.ink }}>
                     {p.name}
-                    {starRatings[p.key]?.bowling && <div className="text-[9px]" style={{ color: C.ball }}>{"★".repeat(starRatings[p.key].bowling)}{"☆".repeat(5 - starRatings[p.key].bowling)}</div>}
+                    <div className="text-[9px]" style={{ color: C.inkSoft }}>
+                      {p.matchesPlayed} match{p.matchesPlayed !== 1 ? "es" : ""}
+                      {starRatings[p.key]?.bowling && <span style={{ color: C.ball }}> · {"★".repeat(starRatings[p.key].bowling)}{"☆".repeat(5 - starRatings[p.key].bowling)}</span>}
+                    </div>
                   </div>
                   <div className="text-center font-semibold">{p.bowling.wickets}</div>
                   <div className="text-center">{p.economy.toFixed(1)}</div>
@@ -1222,7 +1237,10 @@ function PlayerStatsScreen({ matches, teams, go }) {
                   style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
                   <div className="f-ui text-left truncate" style={{ color: C.ink }}>
                     {p.name}
-                    {starRatings[p.key]?.fielding && <div className="text-[9px]" style={{ color: C.gold }}>{"★".repeat(starRatings[p.key].fielding)}{"☆".repeat(5 - starRatings[p.key].fielding)}</div>}
+                    <div className="text-[9px]" style={{ color: C.inkSoft }}>
+                      {p.matchesPlayed} match{p.matchesPlayed !== 1 ? "es" : ""}
+                      {starRatings[p.key]?.fielding && <span style={{ color: C.gold }}> · {"★".repeat(starRatings[p.key].fielding)}{"☆".repeat(5 - starRatings[p.key].fielding)}</span>}
+                    </div>
                   </div>
                   <div className="text-center">{p.fielding.catches}</div>
                   <div className="text-center">{p.fielding.runouts}</div>
@@ -1244,10 +1262,23 @@ function PlayerStatsScreen({ matches, teams, go }) {
 
 /* ---------------------------------- MANAGE ACCESS (admin only) ---------------------------------- */
 
+function timeAgo(iso) {
+  if (!iso) return "";
+  const secs = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 45) return "just now";
+  if (secs < 90) return "1 min ago";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  return `${hrs} hr${hrs !== 1 ? "s" : ""} ago`;
+}
+
 function ManageAccessScreen({ supabaseClient, userEmail, go }) {
   const [people, setPeople] = useState(null); // null = loading
   const [error, setError] = useState(null);
   const [savingEmail, setSavingEmail] = useState(null);
+  const [devices, setDevices] = useState(null); // null = loading
+  const [savingDeviceId, setSavingDeviceId] = useState(null);
 
   const load = async () => {
     setError(null);
@@ -1268,7 +1299,25 @@ function ManageAccessScreen({ supabaseClient, userEmail, go }) {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  const loadDevices = async () => {
+    try {
+      const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+      const { data, error: dErr } = await supabaseClient
+        .from("device_roles")
+        .select("id, display_name, role, last_seen")
+        .gte("last_seen", cutoff)
+        .order("last_seen", { ascending: false });
+      if (!dErr) setDevices(data || []);
+    } catch (e) {
+      // non-fatal -- the "who's here" panel just stays empty
+    }
+  };
+
+  useEffect(() => { load(); loadDevices(); }, []);
+  useEffect(() => {
+    const t = setInterval(loadDevices, 15000);
+    return () => clearInterval(t);
+  }, []);
 
   const setRole = async (email, role) => {
     setSavingEmail(email);
@@ -1278,12 +1327,49 @@ function ManageAccessScreen({ supabaseClient, userEmail, go }) {
     setPeople((ps) => ps.map((p) => p.email === email ? { ...p, role } : p));
   };
 
+  const setDeviceRole = async (id, role) => {
+    setSavingDeviceId(id);
+    const { error: err } = await supabaseClient.from("device_roles").update({ role }).eq("id", id);
+    setSavingDeviceId(null);
+    if (err) { setError(err.message); return; }
+    setDevices((ds) => ds.map((d) => d.id === id ? { ...d, role } : d));
+  };
+
   return (
     <div className="min-h-full pb-8" style={{ background: C.cream }}>
       <TopBar title="Manage Access" onBack={() => go("home")} />
       <div className="p-4">
+        <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2 flex items-center gap-1.5" style={{ color: C.inkSoft }}>
+          <CircleIcon size={7} style={{ color: C.gold, fill: C.gold }} /> Who's Here
+        </div>
+        <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>
+          Everyone currently viewing the app without an account, seen in the last 15 minutes. Promote someone to Scorer right from here -- no password needed, it just unlocks scoring on their device.
+        </div>
+        <div className="space-y-2 mb-6">
+          {devices === null && <div className="f-ui text-sm" style={{ color: C.inkSoft }}>Loading…</div>}
+          {devices && devices.length === 0 && <div className="f-ui text-sm" style={{ color: C.inkSoft }}>Nobody's on the app right now.</div>}
+          {devices && devices.map((d) => (
+            <div key={d.id} className="rounded-xl p-3" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="f-ui text-sm truncate" style={{ color: C.ink }}>{d.display_name || "(no name yet)"}</div>
+                <div className="f-ui text-[10px]" style={{ color: C.inkSoft }}>{timeAgo(d.last_seen)}</div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {["viewer", "scorer"].map((r) => (
+                  <button key={r} disabled={savingDeviceId === d.id} onClick={() => setDeviceRole(d.id, r)}
+                    className="f-ui text-xs py-1.5 rounded-md capitalize stamp-btn disabled:opacity-50"
+                    style={{ background: d.role === r ? C.pitch : C.cream, color: d.role === r ? "#fff" : C.ink, border: `1.5px solid ${C.line}` }}>
+                    {r === "scorer" ? "Make Scorer" : "Viewer"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Signed-In Accounts</div>
         <div className="f-ui text-xs mb-4" style={{ color: C.inkSoft }}>
-          Everyone who has signed up shows up here. Set who can score matches and who else should have full admin control. New sign-ups start as Viewers automatically.
+          Everyone who has an account shows up here. Set who can score matches and who else should have full admin control.
         </div>
         {error && <div className="f-ui text-xs mb-3 px-3 py-2 rounded-md" style={{ background: C.ball + "22", color: C.inkSoft }}>{error}</div>}
         {people === null && <div className="f-ui text-sm" style={{ color: C.inkSoft }}>Loading…</div>}
@@ -3068,9 +3154,29 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
     return { i, inn, bt, bowlT, st, runRate };
   });
 
+  const shareMatch = async () => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}?match=${match.id}`;
+    const dateLabel = new Date((match.matchDate || match.createdAt) + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    const shareTitle = `Scorecard: ${teamOf(match.teamAId)} vs ${teamOf(match.teamBId)} — ${dateLabel}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: shareTitle, text: shareTitle, url: shareUrl }); } catch (e) { /* user cancelled -- fine */ }
+    } else if (navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(`${shareTitle}\n${shareUrl}`);
+        alert("Link copied -- paste it into WhatsApp or wherever you'd like.");
+      } catch (e) { /* ignore */ }
+    }
+  };
+
   return (
     <div className="min-h-full pb-8" style={{ background: C.cream }}>
-      <TopBar title="Scorecard" onBack={() => go("home")} />
+      <TopBar title="Scorecard" onBack={() => go("home")} right={
+        match.status === "completed" ? (
+          <button onClick={shareMatch} className="text-white/90 hover:text-white p-1 stamp-btn" title="Share scorecard">
+            <Share2 size={19} />
+          </button>
+        ) : null
+      } />
       <div className="mx-4 mt-4 rounded-xl p-4 text-center" style={{ background: C.pitch }}>
         <Flag size={20} className="inline mb-1" style={{ color: C.gold }} />
         <div className="f-display text-white text-lg">{match.result?.text || "In progress"}</div>
@@ -3361,7 +3467,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
 
 /* ---------------------------------- APP ---------------------------------- */
 
-export default function CricketApp({ onLogout, userEmail, role, supabaseClient, linkedPlayerName, setLinkedPlayerName }) {
+export default function CricketApp({ onLogout, userEmail, role, supabaseClient, linkedPlayerName, setLinkedPlayerName, isAnonymous, viewerName, onRequestLogin }) {
   const isAdmin = role === "admin";
   const isScorer = role === "scorer" || role === "admin";
   const [screen, setScreen] = useState("home");
@@ -3377,6 +3483,16 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     (async () => {
       const [t, tn, m, pp] = await Promise.all([loadKey("teams", []), loadKey("tournaments", []), loadKey("matches", []), loadKey("playerPool", buildDefaultPool())]);
       setTeams(t); setTournaments(tn); setMatches(m); setPlayerPool(pp); setLoaded(true);
+
+      // A shared match link (?match=<id>) opens straight to that match's
+      // scorecard, for anyone -- no login needed to view it.
+      const params = new URLSearchParams(window.location.search);
+      const sharedId = params.get("match");
+      if (sharedId && m.some((mm) => mm.id === sharedId)) {
+        const sharedMatch = m.find((mm) => mm.id === sharedId);
+        setCurrentMatchId(sharedId);
+        setScreen(sharedMatch.status === "completed" ? "summary" : "live");
+      }
     })();
   }, []);
   useEffect(() => { if (loaded) saveKey("teams", teams); }, [teams, loaded]);
@@ -3711,7 +3827,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     <div className="min-h-screen w-full" style={{ background: C.cream }}>
       {FONTS}
       <div className="max-w-md mx-auto min-h-screen" style={{ background: C.cream, boxShadow: "0 0 40px rgba(0,0,0,0.06)" }}>
-        {screen === "home" && <HomeScreen teams={teams} matches={matches} tournaments={tournaments} playerPool={playerPool} go={go} onLogout={onLogout} userEmail={userEmail} isScorer={isScorer} isAdmin={isAdmin} deleteMatch={isAdmin ? deleteMatch : null} supabaseClient={supabaseClient} linkedPlayerName={linkedPlayerName} setLinkedPlayerName={setLinkedPlayerName} />}
+        {screen === "home" && <HomeScreen teams={teams} matches={matches} tournaments={tournaments} playerPool={playerPool} go={go} onLogout={onLogout} userEmail={userEmail} isScorer={isScorer} isAdmin={isAdmin} deleteMatch={isAdmin ? deleteMatch : null} supabaseClient={supabaseClient} linkedPlayerName={linkedPlayerName} setLinkedPlayerName={setLinkedPlayerName} isAnonymous={isAnonymous} viewerName={viewerName} onRequestLogin={onRequestLogin} />}
         {screen === "manageAccess" && <ManageAccessScreen supabaseClient={supabaseClient} userEmail={userEmail} go={go} />}
         {screen === "teams" && <TeamsScreen teams={teams} setTeams={setTeams} playerPool={playerPool} setPlayerPool={setPlayerPool} matches={matches} isScorer={isScorer} isAdmin={isAdmin} go={go} />}
         {screen === "tournaments" && <TournamentsScreen teams={teams} tournaments={tournaments} setTournaments={setTournaments} matches={matches} deleteTournament={isAdmin ? deleteTournament : null} deleteMatch={isAdmin ? deleteMatch : null} isScorer={isScorer} go={go} />}

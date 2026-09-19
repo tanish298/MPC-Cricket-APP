@@ -13,13 +13,13 @@ const C = {
   line: "#DCD2B8",
 };
 
-export default function Auth() {
+export default function Auth({ onCancel, errorHint }) {
   const [mode, setMode] = useState("signin"); // 'signin' | 'signup'
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState(null); // { type: 'error' | 'info', text }
+  const [message, setMessage] = useState(errorHint ? { type: "error", text: errorHint } : null); // { type: 'error' | 'info', text }
 
   const submit = async (e) => {
     e.preventDefault();
@@ -70,6 +70,11 @@ export default function Auth() {
         </div>
 
         <form onSubmit={submit} className="rounded-2xl p-6" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+          {onCancel && (
+            <button type="button" onClick={onCancel} className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>
+              ← Continue browsing as viewer
+            </button>
+          )}
           <div className="f-display text-lg mb-4" style={{ color: C.ink }}>{mode === "signin" ? "Sign in" : "Create an account"}</div>
 
           <label className="f-ui block text-xs font-semibold mb-1 uppercase tracking-wide" style={{ color: C.inkSoft }}>Email</label>

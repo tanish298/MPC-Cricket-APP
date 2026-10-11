@@ -165,6 +165,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
         batsmanStats[outId].out = true;
         batsmanStats[outId].howOut = ev.wicket.type;
         batsmanStats[outId].fielder = ev.wicket.fielder || null;
+        batsmanStats[outId].bowlerId = ev.wicket.type === "Run Out" ? null : bowler;
         if (ev.wicket.fielderId) {
           if (!fieldingCredits[ev.wicket.fielderId]) fieldingCredits[ev.wicket.fielderId] = { catches: 0, runouts: 0, stumpings: 0 };
           if (ev.wicket.type === "Caught") fieldingCredits[ev.wicket.fielderId].catches++;
@@ -174,7 +175,7 @@ function computeInningsState(innings, squadLen, oversLimit, target) {
         outPlayers.push(outId);
         if (ev.wicket.type !== "Run Out") bowlerStats[bowler].wickets++;
         wicketFlag = true;
-        symbol = runsBat > 0 ? `W+${runsBat}` : "W";
+        symbol = (ev.wicket.type === "Run Out" ? "RO" : "W") + (runsBat > 0 ? `+${runsBat}` : "");
         fallOfWickets.push({ wicketNumber: wickets, score: totalRuns, oversStr: `${Math.floor(legalBalls / 6)}.${legalBalls % 6}`, batsmanId: outId });
         if (currentPair) partnerships.push({ batsman1: currentPair[0], batsman2: currentPair[1], runs: partnerRuns, wicketNumber: wickets, unbeaten: false });
         currentPair = null; partnerRuns = 0;
@@ -391,7 +392,7 @@ function resolveTeam(match, teamId, teams) {
     : (match.teamBSnapshot && match.teamBSnapshot.id === teamId) ? match.teamBSnapshot
     : null;
   if (!snapshot) return live || { id: teamId, name: "Unknown", color: "#999", keeperId: null, players: [] };
-  return { ...(live || { id: teamId, name: "Unknown", color: "#999" }), players: snapshot.players, keeperId: snapshot.keeperId };
+  return { ...(live || { id: teamId, name: "Unknown", color: "#999" }), players: snapshot.players, keeperId: snapshot.keeperId, captainId: snapshot.captainId ?? live?.captainId ?? null };
 }
 
 // Every player who has faced a ball or bowled a ball in this match so far,
@@ -474,6 +475,126 @@ function computeMatchAwards(match, teams) {
   });
 
   return { bestBatsman, bestBowler, bestFielder, bestPartnership };
+}
+
+// Captain / wicketkeeper tags for scorecards: " (c)", " (wk)" or " (c, wk)".
+// The keeper is whoever actually kept in this match (a mid-match change counts).
+function matchKeeperId(match, team) {
+  const inn = match.innings.find((i) => i.bowlingTeamId === team.id);
+  return (inn && inn.currentKeeperId) || team.keeperId || null;
+}
+function roleTag(team, playerId, keeperId) {
+  const c = !!team.captainId && team.captainId === playerId;
+  const wk = !!keeperId && keeperId === playerId;
+  if (!c && !wk) return "";
+  return ` (${[c ? "c" : null, wk ? "wk" : null].filter(Boolean).join(", ")})`;
+}
+
+function oversStrToBalls(str) {
+  const [o, b] = String(str).split(".");
+  return Number(o) * 6 + Number(b || 0);
+}
+
+// Picks out the moments that shaped a completed match: how it finished, where
+// the chase turned, hat-tricks, collapses, huge/double-strike overs, and
+// individual milestones. Everything is derived from the ball-by-ball record.
+function computeKeyMoments(match, teams) {
+  if (!match || match.status !== "completed") return [];
+  const info = match.innings.map((inn, i) => {
+    const bt = resolveTeam(match, inn.battingTeamId, teams);
+    const bowlT = resolveTeam(match, inn.bowlingTeamId, teams);
+    const st = computeInningsState(inn, bt.players.length, match.oversLimit, i === 1 ? inn.target : null);
+    return { i, inn, bt, bowlT, st };
+  }).filter((x) => x.inn.events.length > 0);
+  if (info.length === 0) return [];
+  const nameOf = (team, id) => team.players.find((p) => p.id === id)?.name || "?";
+  const totalBalls = match.oversLimit * 6;
+  const endedEarly = /early|no result/i.test(match.result?.text || "");
+  const finish = [], turning = [], hats = [], collapses = [], bigOvers = [], doubles = [], miles = [];
+
+  // Finish
+  const second = info.find((x) => x.i === 1);
+  const first = info.find((x) => x.i === 0);
+  if (second && first && !endedEarly) {
+    const ballsLeft = totalBalls - second.st.legalBalls;
+    const wLeft = second.st.maxWickets - second.st.wickets;
+    if (second.st.totalRuns === first.st.totalRuns) {
+      finish.push({ icon: "🤝", title: "Match tied", detail: `Both sides finished on ${first.st.totalRuns}.`, where: "Result" });
+    } else if (second.st.totalRuns > first.st.totalRuns) {
+      if (ballsLeft === 0) finish.push({ icon: "🏁", title: "Won off the very last ball", detail: `${second.bt.name} got there with nothing to spare.`, where: "Result" });
+      else if (ballsLeft <= 6) finish.push({ icon: "🏁", title: "Last-over finish", detail: `${second.bt.name} won with ${ballsLeft} ball${ballsLeft !== 1 ? "s" : ""} to spare.`, where: "Result" });
+      else if (wLeft <= 1) finish.push({ icon: "😬", title: "Scraped home", detail: `${second.bt.name} won with just ${wLeft} wicket${wLeft !== 1 ? "s" : ""} in hand.`, where: "Result" });
+      else if (ballsLeft >= totalBalls * 0.3) finish.push({ icon: "🚀", title: "Cruised home", detail: `${second.bt.name} chased it down with ${Math.floor(ballsLeft / 6)}.${ballsLeft % 6} overs to spare.`, where: "Result" });
+    } else {
+      const d = first.st.totalRuns - second.st.totalRuns;
+      if (d <= 5) finish.push({ icon: "😮", title: `Won by just ${d} run${d !== 1 ? "s" : ""}`, detail: `${first.bt.name} held their nerve.`, where: "Result" });
+    }
+  }
+
+  // Turning point of the chase: the over that moved the required rate the most
+  if (second && second.inn.target) {
+    const target = second.inn.target;
+    let cum = 0, prev = target / match.oversLimit, best = null;
+    second.st.overHistory.filter((o) => !o.inProgress).forEach((o) => {
+      cum += o.runs;
+      const left = match.oversLimit - o.overNumber;
+      const need = target - cum;
+      if (left <= 0 || need <= 0) return;
+      const rrr = need / left;
+      const delta = rrr - prev;
+      if (!best || Math.abs(delta) > Math.abs(best.delta)) best = { o, delta, from: prev, to: rrr };
+      prev = rrr;
+    });
+    if (best && Math.abs(best.delta) >= 1.5) {
+      const bowler = nameOf(second.bowlT, best.o.bowlerId);
+      const what = `${best.o.runs} run${best.o.runs !== 1 ? "s" : ""}${best.o.wickets ? ` and ${best.o.wickets} wicket${best.o.wickets !== 1 ? "s" : ""}` : ""} off ${bowler}'s over`;
+      turning.push({
+        icon: "🔄", title: best.delta > 0 ? `Turning point: ${second.bowlT.name} tightened the screws` : `Turning point: ${second.bt.name} hit back`,
+        detail: `${what} — required rate went from ${best.from.toFixed(1)} to ${best.to.toFixed(1)}.`, where: `Inns 2 · over ${best.o.overNumber}`,
+      });
+    }
+  }
+
+  info.forEach(({ i, bt, bowlT, st }) => {
+    const inn = `Inns ${i + 1}`;
+    // Hat-tricks
+    st.hatTricks.forEach((h) => hats.push({ icon: "🎩", title: `Hat-trick for ${nameOf(bowlT, h.bowlerId)}`, detail: `Three wickets in three balls.`, where: `${inn} · ${h.oversStr} ov` }));
+    // Collapse: 3 wickets within 12 balls
+    const f = st.fallOfWickets;
+    let bestC = null;
+    for (let k = 0; k + 2 < f.length; k++) {
+      const span = oversStrToBalls(f[k + 2].oversStr) - oversStrToBalls(f[k].oversStr) + 1;
+      if (span <= 12 && (!bestC || span < bestC.span)) bestC = { k, span };
+    }
+    if (bestC) {
+      const a = f[bestC.k], b = f[bestC.k + 2];
+      collapses.push({ icon: "📉", title: `Collapse: ${bt.name} lost 3 wickets in ${bestC.span} balls`, detail: `From ${a.score}/${a.wicketNumber} to ${b.score}/${b.wicketNumber}.`, where: `${inn} · ${a.oversStr} ov` });
+    }
+    // Big over / double strike
+    st.overHistory.forEach((o) => {
+      if (o.inProgress && o.balls.length < 6) return;
+      const bowler = nameOf(bowlT, o.bowlerId);
+      if (o.runs >= 10) bigOvers.push({ runs: o.runs, item: { icon: "💥", title: `${o.runs} runs off one over`, detail: `${bt.name} took ${o.runs} off ${bowler}.`, where: `${inn} · over ${o.overNumber}` } });
+      if (o.wickets >= 2 && !(o.wickets >= 3 && st.hatTricks.length > 0)) doubles.push({ wk: o.wickets, runs: o.runs, item: { icon: "⚡", title: `${o.wickets} wickets in one over`, detail: `${bowler} struck ${o.wickets} times${o.runs ? ` (${o.runs} run${o.runs !== 1 ? "s" : ""})` : " without conceding"}.`, where: `${inn} · over ${o.overNumber}` } });
+    });
+    // Milestones
+    Object.entries(st.batsmanStats).forEach(([id, b]) => {
+      if (b.runs >= 50) miles.push({ score: b.runs, item: { icon: b.runs >= 100 ? "💯" : "5️⃣0️⃣", title: `${nameOf(bt, id)} ${b.runs >= 100 ? "scored a hundred" : "scored a fifty"}`, detail: `${b.runs}${b.out ? "" : "*"} off ${b.balls} balls (${b.fours} fours, ${b.sixes} sixes).`, where: inn } });
+    });
+    Object.entries(st.bowlerStats).forEach(([id, b]) => {
+      if (b.wickets >= 3) miles.push({ score: b.wickets * 20, item: { icon: "🎯", title: `${nameOf(bowlT, id)} took ${b.wickets} wickets`, detail: `${b.wickets}/${b.runs} in ${Math.floor(b.balls / 6)}.${b.balls % 6} overs.`, where: inn } });
+    });
+  });
+
+  bigOvers.sort((a, b) => b.runs - a.runs);
+  doubles.sort((a, b) => b.wk - a.wk || a.runs - b.runs);
+  miles.sort((a, b) => b.score - a.score);
+  collapses.sort((a, b) => 0);
+  return [
+    ...finish, ...turning, ...hats, ...collapses,
+    ...bigOvers.slice(0, 1).map((x) => x.item), ...doubles.slice(0, 1).map((x) => x.item),
+    ...miles.slice(0, 2).map((x) => x.item),
+  ].slice(0, 7);
 }
 
 function computeCareerStats(matches, teams, filterType, filterKey) {
@@ -661,6 +782,44 @@ function StarRatingBadges({ ratings }) {
 }
 
 /* ---------------------------------- SMALL UI ATOMS ---------------------------------- */
+
+// A ball symbol that represents a dismissal: "W", "W+1", "RO", "RO+2" ...
+function isWicketBall(b) { return /^(W|RO)(\+\d+)?$/.test(b); }
+
+// Standard scorecard wording for how a batter was dismissed, including who bowled.
+function dismissalText(s, bowlerName) {
+  const type = (s.howOut || "").toLowerCase();
+  const f = s.fielder;
+  const b = bowlerName || "";
+  if (type === "bowled") return b ? `b ${b}` : "bowled";
+  if (type === "caught") return f && b && f === b ? `c & b ${b}` : `c ${f || "?"}${b ? ` b ${b}` : ""}`;
+  if (type === "lbw") return b ? `lbw b ${b}` : "lbw";
+  if (type === "stumped") return `st ${f || "?"}${b ? ` b ${b}` : ""}`;
+  if (type === "run out") return f ? `run out (${f})` : "run out";
+  if (type === "hit wicket") return b ? `hit wicket b ${b}` : "hit wicket";
+  return `${s.howOut}${b ? ` b ${b}` : ""}`;
+}
+
+// Projected first-innings total. Honest about uncertainty: no projection
+// until a few overs are in (a single six in the first ball must not project
+// 360), the final total once the innings is over, and a slowdown when most
+// wickets are gone (a team 8 down can't keep scoring at the opening pace).
+function projectedScore({ runs, legalBalls, oversLimit, wickets, maxWickets, complete }) {
+  if (complete) return runs;
+  const totalBalls = oversLimit * 6;
+  const minBalls = Math.min(12, Math.max(6, Math.round(totalBalls * 0.2)));
+  if (legalBalls < minBalls) return null;
+  const ballsLeft = Math.max(0, totalBalls - legalBalls);
+  const lostFrac = maxWickets > 0 ? wickets / maxWickets : 0;
+  const wicketFactor = lostFrac <= 0.5 ? 1 : Math.max(0.6, 1 - (lostFrac - 0.5) * 0.8);
+  return Math.round(runs + (runs / legalBalls) * ballsLeft * wicketFactor);
+}
+
+// Required run rate for a chase: runs still needed per over, over the balls left.
+function requiredRate(reqRuns, ballsLeft) {
+  if (reqRuns === null || reqRuns <= 0 || ballsLeft <= 0) return null;
+  return (reqRuns / (ballsLeft / 6)).toFixed(2);
+}
 
 function TopBar({ title, onBack, right }) {
   return (
@@ -1714,7 +1873,7 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, matches, isSc
 
   const createTeam = () => {
     if (!name.trim()) return;
-    setTeams((ts) => [...ts, { id: uid(), name: name.trim(), color, players: [], keeperId: null }]);
+    setTeams((ts) => [...ts, { id: uid(), name: name.trim(), color, players: [], keeperId: null, captainId: null }]);
     setName(""); setColor(TEAM_SWATCHES[0]); setAdding(false);
   };
   const addPlayer = (teamId) => {
@@ -1726,7 +1885,10 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, matches, isSc
     setPlayerName("");
   };
   const removePlayer = (teamId, playerId) => {
-    setTeams((ts) => ts.map((t) => t.id === teamId ? { ...t, players: t.players.filter((p) => p.id !== playerId), keeperId: t.keeperId === playerId ? null : t.keeperId } : t));
+    setTeams((ts) => ts.map((t) => t.id === teamId ? { ...t, players: t.players.filter((p) => p.id !== playerId), keeperId: t.keeperId === playerId ? null : t.keeperId, captainId: t.captainId === playerId ? null : t.captainId } : t));
+  };
+  const setCaptain = (teamId, playerId) => {
+    setTeams((ts) => ts.map((t) => t.id === teamId ? { ...t, captainId: t.captainId === playerId ? null : playerId } : t));
   };
   const setKeeper = (teamId, playerId) => {
     setTeams((ts) => ts.map((t) => t.id === teamId ? { ...t, keeperId: t.keeperId === playerId ? null : playerId } : t));
@@ -1821,16 +1983,18 @@ function TeamsScreen({ teams, setTeams, playerPool, setPlayerPool, matches, isSc
                 style={{ background: C.gold + "22", color: C.gold, border: `1.5px solid ${C.gold}` }}>
                 Add from Regular Players ({poolAvailable.length} available)
               </button>
-              <div className="f-ui text-xs mb-2" style={{ color: C.inkSoft }}>Tap the shield to set the wicketkeeper.</div>
+              <div className="f-ui text-xs mb-2" style={{ color: C.inkSoft }}>Tap the shield to set the wicketkeeper, and the C to set the captain.</div>
             </>
           )}
           <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
             {team.players.length === 0 && <div className="p-4 f-ui text-sm" style={{ color: C.inkSoft }}>No players yet.{isScorer ? " Add your roster above." : ""}</div>}
             {team.players.map((p, i) => (
               <div key={p.id} className="flex items-center justify-between px-4 py-2.5" style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
-                <span className="f-ui text-sm" style={{ color: C.ink }}>{i + 1}. {p.name}{team.keeperId === p.id ? <span className="f-ui text-[10px] font-bold ml-2 px-1.5 py-0.5 rounded" style={{ background: C.gold + "33", color: C.gold }}>WK</span> : null}</span>
+                <span className="f-ui text-sm" style={{ color: C.ink }}>{i + 1}. {p.name}{team.captainId === p.id ? <span className="f-ui text-[10px] font-bold ml-2 px-1.5 py-0.5 rounded" style={{ background: C.pitch + "22", color: C.pitch }}>C</span> : null}{team.keeperId === p.id ? <span className="f-ui text-[10px] font-bold ml-2 px-1.5 py-0.5 rounded" style={{ background: C.gold + "33", color: C.gold }}>WK</span> : null}</span>
                 {isScorer && (
                   <div className="flex items-center gap-3">
+                    <button onClick={() => setCaptain(team.id, p.id)} title="Set as captain" className="f-ui text-[11px] font-bold rounded-full flex items-center justify-center"
+                      style={{ width: 20, height: 20, background: team.captainId === p.id ? C.pitch : "transparent", color: team.captainId === p.id ? "#fff" : C.inkSoft, border: `1.5px solid ${team.captainId === p.id ? C.pitch : C.line}` }}>C</button>
                     <button onClick={() => setKeeper(team.id, p.id)} title="Set as wicketkeeper">
                       <Shield size={15} style={{ color: team.keeperId === p.id ? C.gold : C.line }} fill={team.keeperId === p.id ? C.gold : "none"} />
                     </button>
@@ -2438,7 +2602,8 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
 
   const reqRuns = target !== null ? target - state.totalRuns : null;
   const ballsLeft = target !== null ? match.oversLimit * 6 - state.legalBalls : null;
-  const reqRate = target !== null && ballsLeft > 0 ? (reqRuns / (ballsLeft / 6)).toFixed(2) : null;
+  const reqRate = requiredRate(reqRuns, ballsLeft);
+  const currentRate = state.legalBalls > 0 ? (state.totalRuns / (state.legalBalls / 6)).toFixed(2) : null;
 
   return (
     <div className="min-h-full pb-8" style={{ background: C.cream }}>
@@ -2470,6 +2635,7 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
             <div className="f-mono text-3xl font-bold mt-0.5" style={{ color: C.pitch }}>
               {state.totalRuns}/{state.wickets} <span className="text-base font-normal" style={{ color: C.inkSoft }}>({state.oversStr})</span>
             </div>
+            {currentRate && <div className="f-ui text-xs mt-0.5" style={{ color: C.inkSoft }}>CRR {currentRate}</div>}
           </div>
           {target !== null && (
             <div className="text-right">
@@ -2478,13 +2644,12 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
               {reqRate && <div className="f-ui text-xs" style={{ color: C.inkSoft }}>RRR {reqRate}</div>}
             </div>
           )}
-          {target === null && state.legalBalls > 0 && (() => {
-            const oversFaced = state.legalBalls / 6;
-            const projected = Math.round(state.totalRuns + (state.totalRuns / oversFaced) * (match.oversLimit - oversFaced));
+          {target === null && state.legalBalls > 0 && !state.complete && (() => {
+            const projected = projectedScore({ runs: state.totalRuns, legalBalls: state.legalBalls, oversLimit: match.oversLimit, wickets: state.wickets, maxWickets: state.maxWickets, complete: state.complete });
             return (
               <div className="text-right">
                 <div className="f-ui text-xs" style={{ color: C.inkSoft }}>Projected</div>
-                <div className="f-mono text-lg font-semibold" style={{ color: C.gold }}>{projected}</div>
+                <div className="f-mono text-lg font-semibold" style={{ color: C.gold }}>{projected === null ? "—" : projected}</div>
               </div>
             );
           })()}
@@ -2493,7 +2658,7 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
         <div className="flex gap-1.5 mt-3 flex-wrap">
           {state.overBalls.map((b, i) => (
             <div key={i} className="f-mono text-xs w-7 h-7 rounded-full flex items-center justify-center"
-              style={{ background: (b === "W" || b.startsWith("W+")) ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: (b === "W" || b.startsWith("W+")) ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
+              style={{ background: isWicketBall(b) ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: isWicketBall(b) ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
               {b}
             </div>
           ))}
@@ -2590,7 +2755,7 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
                 <div className="flex gap-1.5 flex-wrap mb-2">
                   {ov.balls.map((b, i) => (
                     <div key={i} className="f-mono text-xs w-7 h-7 rounded-full flex items-center justify-center"
-                      style={{ background: (b === "W" || b.startsWith("W+")) ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: (b === "W" || b.startsWith("W+")) ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
+                      style={{ background: isWicketBall(b) ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: isWicketBall(b) ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
                       {b}
                     </div>
                   ))}
@@ -2617,8 +2782,8 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
               return (
                 <div key={id} className="grid grid-cols-[1fr,36px,36px,32px,32px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
                   <div className="f-ui truncate" style={{ color: C.ink }}>
-                    {name}{id === vState.striker && !s.out && showIdx === idx ? " *" : ""}
-                    <span className="block text-[10px]" style={{ color: C.inkSoft }}>{s.out ? `${s.howOut}${s.fielder ? ` (${s.fielder})` : ""}` : (vState.retiredPlayers.includes(id) ? "retired hurt" : "not out")}</span>
+                    {name}{roleTag(vBat, id, matchKeeperId(match, vBat))}{id === vState.striker && !s.out && showIdx === idx ? " *" : ""}
+                    <span className="block text-[10px]" style={{ color: C.inkSoft }}>{s.out ? dismissalText(s, vBowl.players.find((p) => p.id === s.bowlerId)?.name) : (vState.retiredPlayers.includes(id) ? "retired hurt" : "not out")}</span>
                   </div>
                   <div className="text-center font-semibold">{s.runs}</div>
                   <div className="text-center">{s.balls}</div>
@@ -2634,7 +2799,7 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
             return yetToBat.length > 0 ? (
               <div className="rounded-xl overflow-hidden mb-3 px-3 py-2" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
                 <div className="f-ui text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: C.inkSoft }}>Yet to Bat</div>
-                <div className="f-ui text-xs" style={{ color: C.ink }}>{yetToBat.map((p) => p.name).join(", ")}</div>
+                <div className="f-ui text-xs" style={{ color: C.ink }}>{yetToBat.map((p) => `${p.name}${roleTag(vBat, p.id, matchKeeperId(match, vBat))}`).join(", ")}</div>
               </div>
             ) : null;
           })()}
@@ -2648,7 +2813,7 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
               return (
                 <div key={id} className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
                   <div className="f-ui truncate" style={{ color: C.ink }}>
-                    {name}{id === vState.bowler && showIdx === idx ? " *" : ""}
+                    {name}{roleTag(vBowl, id, matchKeeperId(match, vBowl))}{id === vState.bowler && showIdx === idx ? " *" : ""}
                     {oversList.length > 0 && <span className="block text-[10px]" style={{ color: C.inkSoft }}>Overs: {oversList.join(", ")}</span>}
                   </div>
                   <div className="text-center">{Math.floor(s.balls / 6)}.{s.balls % 6}</div>
@@ -2674,7 +2839,7 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
           const isStriker = id === state.striker;
           const row = (
             <div className="grid grid-cols-[1fr,44px,32px,32px,44px] px-3 py-1.5 items-center f-mono text-xs">
-              <div className="f-ui truncate" style={{ color: C.ink }}>{battingName(id)}{isStriker ? " *" : ""}</div>
+              <div className="f-ui truncate" style={{ color: C.ink }}>{battingName(id)}{roleTag(battingTeam, id, matchKeeperId(match, battingTeam))}{isStriker ? " *" : ""}</div>
               <div className="text-center font-semibold">{s.runs}</div>
               <div className="text-center">{s.balls}</div>
               <div className="text-center">{s.fours}/{s.sixes}</div>
@@ -2689,7 +2854,7 @@ function LiveScreen({ match, teams, playerPool, appendEvent, setOpeners, setKeep
         })}
         {isScorer && <div className="px-3 pb-1.5 -mt-1 f-ui text-[10px]" style={{ color: C.inkSoft }}>Tap either name to correct who's on strike, anytime.</div>}
         <div className="px-3 py-1.5 f-mono text-xs" style={{ borderTop: `1px solid ${C.line}`, color: C.inkSoft }}>
-          <span className="f-ui">Bowling: </span>{bowlingName(state.bowler)} — {state.bowlerStats[state.bowler] ? `${Math.floor(state.bowlerStats[state.bowler].balls/6)}.${state.bowlerStats[state.bowler].balls%6}-${state.bowlerStats[state.bowler].runs}-${state.bowlerStats[state.bowler].wickets}` : "0.0-0-0"}
+          <span className="f-ui">Bowling: </span>{bowlingName(state.bowler)}{roleTag(bowlingTeam, state.bowler, effectiveKeeperId)} — {state.bowlerStats[state.bowler] ? `${Math.floor(state.bowlerStats[state.bowler].balls/6)}.${state.bowlerStats[state.bowler].balls%6}-${state.bowlerStats[state.bowler].runs}-${state.bowlerStats[state.bowler].wickets}` : "0.0-0-0"}
           {" "}(econ {fmtEcon(state.bowlerStats[state.bowler]?.runs || 0, state.bowlerStats[state.bowler]?.balls || 0)})
           {match.maxOversPerBowler && <span> · limit {match.maxOversPerBowler} ov</span>}
           {(state.bowlerOvers[state.bowler] || []).length > 0 && <span> · overs {state.bowlerOvers[state.bowler].join(", ")}</span>}
@@ -3202,6 +3367,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
   const [wkVenue, setWkVenue] = useState("");
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
   const awards = match.status === "completed" ? computeMatchAwards(match, teams) : null;
+  const moments = match.status === "completed" ? computeKeyMoments(match, teams) : [];
   const teamOf = (id) => teams.find((t) => t.id === id)?.name || "";
 
   const openWeeklyModal = () => {
@@ -3262,6 +3428,24 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
             </span>
             <span className="f-ui text-xs font-semibold" style={{ color: C.pitch }}>{match.weekday ? "Edit" : "Add to Weekly Cricket"}</span>
           </button>
+        </div>
+      )}
+
+      {moments.length > 0 && (
+        <div className="mx-4 mt-3">
+          <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Key Moments</div>
+          <div className="rounded-xl overflow-hidden" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+            {moments.map((m, i) => (
+              <div key={i} className="flex gap-3 px-3 py-2.5" style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
+                <div className="text-lg leading-none mt-0.5">{m.icon}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="f-display text-sm" style={{ color: C.ink }}>{m.title}</div>
+                  <div className="f-ui text-xs mt-0.5" style={{ color: C.inkSoft }}>{m.detail}</div>
+                </div>
+                {m.where && <div className="f-ui text-[10px] flex-shrink-0 mt-1 text-right" style={{ color: C.inkSoft }}>{m.where}</div>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -3405,7 +3589,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
               const name = bt.players.find((p) => p.id === id)?.name;
               return (
                 <div key={id} className="grid grid-cols-[1fr,36px,36px,32px,32px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
-                  <div className="f-ui truncate" style={{ color: C.ink }}>{name}<span className="block text-[10px]" style={{ color: C.inkSoft }}>{s.out ? `${s.howOut}${s.fielder ? ` (${s.fielder})` : ""}` : (st.retiredPlayers.includes(id) ? "retired hurt" : "not out")}</span></div>
+                  <div className="f-ui truncate" style={{ color: C.ink }}>{name}{roleTag(bt, id, matchKeeperId(match, bt))}<span className="block text-[10px]" style={{ color: C.inkSoft }}>{s.out ? dismissalText(s, bowlT.players.find((p) => p.id === s.bowlerId)?.name) : (st.retiredPlayers.includes(id) ? "retired hurt" : "not out")}</span></div>
                   <div className="text-center font-semibold">{s.runs}</div>
                   <div className="text-center">{s.balls}</div>
                   <div className="text-center">{s.fours}</div>
@@ -3420,7 +3604,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
             return yetToBat.length > 0 ? (
               <div className="rounded-xl overflow-hidden mb-3 px-3 py-2" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
                 <div className="f-ui text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: C.inkSoft }}>Yet to Bat</div>
-                <div className="f-ui text-xs" style={{ color: C.ink }}>{yetToBat.map((p) => p.name).join(", ")}</div>
+                <div className="f-ui text-xs" style={{ color: C.ink }}>{yetToBat.map((p) => `${p.name}${roleTag(bt, p.id, matchKeeperId(match, bt))}`).join(", ")}</div>
               </div>
             ) : null;
           })()}
@@ -3434,7 +3618,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
               return (
                 <div key={id} className="grid grid-cols-[1fr,36px,36px,36px,44px] px-3 py-1.5 items-center f-mono text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
                   <div className="f-ui truncate" style={{ color: C.ink }}>
-                    {name}
+                    {name}{roleTag(bowlT, id, matchKeeperId(match, bowlT))}
                     {oversList.length > 0 && <span className="block text-[10px]" style={{ color: C.inkSoft }}>Overs: {oversList.join(", ")}</span>}
                   </div>
                   <div className="text-center">{Math.floor(s.balls / 6)}.{s.balls % 6}</div>
@@ -3459,7 +3643,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
                   <div className="flex gap-1.5 flex-wrap mb-2">
                     {ov.balls.map((b, i) => (
                       <div key={i} className="f-mono text-xs w-7 h-7 rounded-full flex items-center justify-center"
-                        style={{ background: (b === "W" || b.startsWith("W+")) ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: (b === "W" || b.startsWith("W+")) ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
+                        style={{ background: isWicketBall(b) ? C.ball : (b === "•" ? C.cream : C.gold + "33"), color: isWicketBall(b) ? "#fff" : C.ink, border: `1px solid ${C.line}` }}>
                         {b}
                       </div>
                     ))}
@@ -3693,7 +3877,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
 
   const snapshotTeam = (teamId) => {
     const t = teams.find((tm) => tm.id === teamId);
-    return t ? { id: t.id, players: t.players.map((p) => ({ ...p })), keeperId: t.keeperId } : null;
+    return t ? { id: t.id, players: t.players.map((p) => ({ ...p })), keeperId: t.keeperId, captainId: t.captainId ?? null } : null;
   };
 
   const createMatch = ({ tournamentId, category, weekday, matchDate, venue, teamAId, teamBId, oversLimit, maxOversPerBowler, tossWinnerId, tossChoice }) => {
@@ -3910,7 +4094,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       const ensureSnapshot = (existing, teamId) => {
         if (existing) return existing;
         const live = teams.find((t) => t.id === teamId);
-        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId } : null;
+        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId, captainId: live.captainId ?? null } : null;
       };
       const teamASnapshot = ensureSnapshot(m.teamASnapshot, m.teamAId);
       const teamBSnapshot = ensureSnapshot(m.teamBSnapshot, m.teamBId);
@@ -3936,7 +4120,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
         if (existing) return existing;
         if (tId !== teamId) return existing;
         const live = teams.find((t) => t.id === tId);
-        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId } : null;
+        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId, captainId: live.captainId ?? null } : null;
       };
       const teamASnapshot = ensureSnapshot(m.teamASnapshot, m.teamAId);
       const teamBSnapshot = ensureSnapshot(m.teamBSnapshot, m.teamBId);
@@ -3988,7 +4172,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       const ensureSnapshot = (existing, tId) => {
         if (existing) return existing;
         const live = teams.find((t) => t.id === tId);
-        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId } : null;
+        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId, captainId: live.captainId ?? null } : null;
       };
       const teamASnapshot = ensureSnapshot(m.teamASnapshot, m.teamAId);
       const teamBSnapshot = ensureSnapshot(m.teamBSnapshot, m.teamBId);

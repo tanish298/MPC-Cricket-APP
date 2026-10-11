@@ -754,12 +754,26 @@ function ConfirmModal({ title, message, confirmLabel = "Delete", onConfirm, onCa
 
 /* ---------------------------------- HOME ---------------------------------- */
 
-function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, userEmail, deleteMatch, isScorer, isAdmin, supabaseClient, linkedPlayerName, setLinkedPlayerName, isAnonymous, viewerName, onRequestLogin }) {
+function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, userEmail, deleteMatch, isScorer, isAdmin, supabaseClient, linkedPlayerName, setLinkedPlayerName, isAnonymous, viewerName, onRequestLogin, onClaimAdmin, onReleaseAdmin }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [assignedRoles, setAssignedRoles] = useState([]);
   const [namePicker, setNamePicker] = useState(false);
   const [customName, setCustomName] = useState("");
   const [showMyProfile, setShowMyProfile] = useState(false);
+  const [codeModal, setCodeModal] = useState(false);
+  const [codeInput, setCodeInput] = useState("");
+  const [codeMsg, setCodeMsg] = useState(null);
+  const [codeBusy, setCodeBusy] = useState(false);
+  const submitAdminCode = async () => {
+    if (!codeInput.trim() || codeBusy) return;
+    setCodeBusy(true); setCodeMsg(null);
+    const r = await onClaimAdmin(codeInput);
+    setCodeBusy(false);
+    if (r === "ok") { setCodeModal(false); setCodeInput(""); }
+    else if (r === "wrong") setCodeMsg("That code isn't right.");
+    else if (r === "locked") setCodeMsg("Too many wrong tries. Wait 15 minutes and try again.");
+    else setCodeMsg("Couldn't check the code. Please try again.");
+  };
 
   useEffect(() => {
     if (!isAdmin || !supabaseClient) return;
@@ -791,12 +805,23 @@ function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, use
           </div>
           {isAnonymous ? (
             <div className="text-right">
-              <button onClick={onRequestLogin} className="f-ui text-[11px] text-white/70 border border-white/30 rounded-md px-2.5 py-1.5 mt-1 stamp-btn">
-                Log in as Scorer
-              </button>
+              {isAdmin ? (
+                <button onClick={onReleaseAdmin} className="f-ui text-[11px] text-white/70 border border-white/30 rounded-md px-2.5 py-1.5 mt-1 stamp-btn">
+                  Leave admin
+                </button>
+              ) : (
+                <button onClick={onRequestLogin} className="f-ui text-[11px] text-white/70 border border-white/30 rounded-md px-2.5 py-1.5 mt-1 stamp-btn">
+                  Log in as Scorer
+                </button>
+              )}
               <div className="f-ui text-[10px] mt-1" style={{ color: isScorer ? "#D8B56A" : "rgba(255,255,255,0.5)" }}>
-                {isScorer ? "Scorer" : "Viewer"}{viewerName ? ` · ${viewerName}` : ""}
+                {isAdmin ? "Admin" : isScorer ? "Scorer" : "Viewer"}{viewerName ? ` · ${viewerName}` : ""}
               </div>
+              {!isAdmin && onClaimAdmin && (
+                <button onClick={() => { setCodeModal(true); setCodeMsg(null); }} className="f-ui text-[10px] mt-1 underline" style={{ color: "rgba(255,255,255,0.6)" }}>
+                  Admin code
+                </button>
+              )}
             </div>
           ) : onLogout && (
             <div className="text-right">
@@ -868,6 +893,15 @@ function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, use
           </div>
         )}
       </div>
+
+      {codeModal && (
+        <Modal title="Admin login" onClose={() => setCodeModal(false)}>
+          <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>Enter your special access code.</div>
+          <TextInput type="password" value={codeInput} onChange={(e) => setCodeInput(e.target.value)} placeholder="Access code" />
+          {codeMsg && <div className="f-ui text-xs mt-3 px-3 py-2 rounded-md" style={{ background: C.ball + "22", color: C.inkSoft }}>{codeMsg}</div>}
+          <Btn className="w-full mt-3" disabled={!codeInput.trim() || codeBusy} onClick={submitAdminCode}>{codeBusy ? "Checking…" : "Log in as Admin"}</Btn>
+        </Modal>
+      )}
 
       {namePicker && (
         <Modal title="Which name is you?" onClose={() => setNamePicker(false)}>
@@ -3504,7 +3538,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
 
 /* ---------------------------------- APP ---------------------------------- */
 
-export default function CricketApp({ onLogout, userEmail, role, supabaseClient, linkedPlayerName, setLinkedPlayerName, isAnonymous, viewerName, onRequestLogin }) {
+export default function CricketApp({ onLogout, userEmail, role, supabaseClient, linkedPlayerName, setLinkedPlayerName, isAnonymous, viewerName, onRequestLogin, onClaimAdmin, onReleaseAdmin }) {
   const isAdmin = role === "admin";
   const isScorer = role === "scorer" || role === "admin";
   const [screen, setScreen] = useState("home");
@@ -3985,7 +4019,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
             Couldn't save your last change. Check your connection or permissions — it will retry on the next action.
           </div>
         )}
-        {screen === "home" && <HomeScreen teams={teams} matches={matches} tournaments={tournaments} playerPool={playerPool} go={go} onLogout={onLogout} userEmail={userEmail} isScorer={isScorer} isAdmin={isAdmin} deleteMatch={isAdmin ? deleteMatch : null} supabaseClient={supabaseClient} linkedPlayerName={linkedPlayerName} setLinkedPlayerName={setLinkedPlayerName} isAnonymous={isAnonymous} viewerName={viewerName} onRequestLogin={onRequestLogin} />}
+        {screen === "home" && <HomeScreen teams={teams} matches={matches} tournaments={tournaments} playerPool={playerPool} go={go} onLogout={onLogout} userEmail={userEmail} isScorer={isScorer} isAdmin={isAdmin} deleteMatch={isAdmin ? deleteMatch : null} supabaseClient={supabaseClient} linkedPlayerName={linkedPlayerName} setLinkedPlayerName={setLinkedPlayerName} isAnonymous={isAnonymous} viewerName={viewerName} onRequestLogin={onRequestLogin} onClaimAdmin={onClaimAdmin} onReleaseAdmin={onReleaseAdmin} />}
         {screen === "manageAccess" && <ManageAccessScreen supabaseClient={supabaseClient} userEmail={userEmail} go={go} />}
         {screen === "teams" && <TeamsScreen teams={teams} setTeams={setTeams} playerPool={playerPool} setPlayerPool={setPlayerPool} matches={matches} isScorer={isScorer} isAdmin={isAdmin} go={go} />}
         {screen === "tournaments" && <TournamentsScreen teams={teams} tournaments={tournaments} setTournaments={setTournaments} matches={matches} deleteTournament={isAdmin ? deleteTournament : null} deleteMatch={isAdmin ? deleteMatch : null} isScorer={isScorer} go={go} />}

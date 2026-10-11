@@ -141,6 +141,27 @@ export default function App() {
     if (!error) setLinkedPlayerName(name);
   };
 
+  // Admin login by special access code: checked on the server (the code is
+  // never in the app), and on success this device is made Admin.
+  const claimAdmin = async (code) => {
+    if (!session) return "denied";
+    const typedName = displayName || localStorage.getItem(DEVICE_NAME_KEY) || null;
+    const { data, error } = await supabase.rpc("claim_admin", { code, display: typedName });
+    if (error) return "error";
+    if (data === "ok") {
+      if (!displayName) setDisplayName(typedName || "Admin");
+      setNeedsName(false);
+      setRole("admin");
+    }
+    return data;
+  };
+
+  const releaseAdmin = async () => {
+    if (!session) return;
+    const { error } = await supabase.from("device_roles").update({ role: "viewer" }).eq("id", session.user.id);
+    if (!error) setRole("viewer");
+  };
+
   const submitViewerName = async (name) => {
     const trimmed = name.trim();
     if (!trimmed || !session) return;
@@ -177,7 +198,7 @@ export default function App() {
   }
 
   if (isAnonymous && needsName) {
-    return <NamePrompt onSubmit={submitViewerName} />;
+    return <NamePrompt onSubmit={submitViewerName} onAdminCode={claimAdmin} />;
   }
 
   if (role === null || linkedPlayerName === undefined) {
@@ -199,6 +220,8 @@ export default function App() {
       isAnonymous={isAnonymous}
       viewerName={displayName}
       onRequestLogin={() => setShowLogin(true)}
+      onClaimAdmin={isAnonymous ? claimAdmin : null}
+      onReleaseAdmin={isAnonymous ? releaseAdmin : null}
     />
   );
 }

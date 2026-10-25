@@ -395,8 +395,23 @@ function resolveTeam(match, teamId, teams) {
   const snapshot = (match.teamASnapshot && match.teamASnapshot.id === teamId) ? match.teamASnapshot
     : (match.teamBSnapshot && match.teamBSnapshot.id === teamId) ? match.teamBSnapshot
     : null;
-  if (!snapshot) return live || { id: teamId, name: "Unknown", color: "#999", keeperId: null, players: [] };
-  return { ...(live || { id: teamId, name: "Unknown", color: "#999" }), players: snapshot.players, keeperId: snapshot.keeperId, captainId: snapshot.captainId ?? live?.captainId ?? null };
+  // A team's name/colour are saved inside each match, so deleting or
+  // renaming a team later never blanks out its old fixtures.
+  const fallback = { id: teamId, name: snapshot?.name || "Unknown", color: snapshot?.color || "#999" };
+  if (!snapshot) return live || { ...fallback, keeperId: null, players: [] };
+  return { ...(live || fallback), players: snapshot.players, keeperId: snapshot.keeperId, captainId: snapshot.captainId ?? live?.captainId ?? null };
+}
+
+// Name for a team anywhere in the app: the live team if it still exists,
+// otherwise the name saved inside any match it played.
+function teamLabel(teamId, teams, matches) {
+  const live = teams.find((t) => t.id === teamId);
+  if (live) return live.name;
+  for (const m of matches || []) {
+    const sn = m.teamASnapshot?.id === teamId ? m.teamASnapshot : m.teamBSnapshot?.id === teamId ? m.teamBSnapshot : null;
+    if (sn?.name) return sn.name;
+  }
+  return "Unknown";
 }
 
 // Every player who has faced a ball or bowled a ball in this match so far,
@@ -951,7 +966,7 @@ function HomeScreen({ teams, matches, tournaments, playerPool, go, onLogout, use
 
   const liveMatches = matches.filter((m) => m.status === "live");
   const recent = matches.filter((m) => m.status === "completed").slice(-5).reverse();
-  const teamName = (id) => teams.find((t) => t.id === id)?.name || "Unknown";
+  const teamName = (id) => teamLabel(id, teams, matches);
   const upcomingWeekly = matches
     .filter((m) => m.category === "weekly" && m.status === "scheduled")
     .sort((a, b) => (a.matchDate || "") > (b.matchDate || "") ? 1 : -1)[0];
@@ -1303,7 +1318,7 @@ function PlayerStatsScreen({ matches, teams, go }) {
   const sortedBowling = [...data.players].filter((p) => p.bowling.wickets > 0 || p.bowling.innings > 0).sort((a, b) => b.bowling.wickets - a.bowling.wickets || a.economy - b.economy);
   const sortedFielding = [...data.players].filter((p) => p.fieldingTotal > 0).sort((a, b) => b.fieldingTotal - a.fieldingTotal);
 
-  const teamOf = (id) => teams.find((t) => t.id === id)?.name || "";
+  const teamOf = (id) => teamLabel(id, teams, matches);
 
   return (
     <div className="min-h-full pb-8" style={{ background: C.cream }}>
@@ -1617,7 +1632,7 @@ function ManageAccessScreen({ supabaseClient, userEmail, go }) {
 /* ---------------------------------- MATCH HISTORY ---------------------------------- */
 
 function MatchHistoryScreen({ matches, teams, go }) {
-  const teamName = (id) => teams.find((t) => t.id === id)?.name || "Unknown";
+  const teamName = (id) => teamLabel(id, teams, matches);
   const fmtMonth = (key) => {
     const [y, m] = key.split("-");
     return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
@@ -1699,10 +1714,11 @@ function buildIdentitySlots(match) {
   return slots;
 }
 
-function FixPlayerScreen({ match, teams, fixIdentitySlot, renamePlayerInMatch, go }) {
+function FixPlayerScreen({ match, teams, fixIdentitySlot, renamePlayerInMatch, renameTeamInMatch, go }) {
   const [editingSlot, setEditingSlot] = useState(null);
   const [renamingPlayer, setRenamingPlayer] = useState(null); // { id, name }
   const [renameText, setRenameText] = useState("");
+  const [renamingTeam, setRenamingTeam] = useState(null); // { id, name }
 
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
   const slots = buildIdentitySlots(match);
@@ -1724,6 +1740,19 @@ function FixPlayerScreen({ match, teams, fixIdentitySlot, renamePlayerInMatch, g
     <div className="min-h-full pb-8" style={{ background: C.cream }}>
       <TopBar title="Fix Player" onBack={() => go("home")} />
       <div className="p-4">
+        <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Team names in this match</div>
+        <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>
+          If a team shows as "Unknown" (its team was deleted before names were saved), type its name back in here.
+        </div>
+        <div className="rounded-xl overflow-hidden mb-6" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
+          {[teamARoster, teamBRoster].map((t, i) => (
+            <div key={t.id} className="flex items-center justify-between px-4 py-2.5" style={{ borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
+              <span className="f-ui text-sm" style={{ color: C.ink }}>{t.name}</span>
+              <button onClick={() => { setRenamingTeam({ id: t.id, name: t.name }); setRenameText(t.name === "Unknown" ? "" : t.name); }} className="f-ui text-xs font-semibold stamp-btn" style={{ color: C.pitch }}>Rename</button>
+            </div>
+          ))}
+        </div>
+
         <div className="f-ui text-xs font-bold uppercase tracking-wide mb-2" style={{ color: C.inkSoft }}>Rename a Player</div>
         <div className="f-ui text-xs mb-3" style={{ color: C.inkSoft }}>
           Fixes a typo or alias for this specific match only — like the one it was played under, wherever they were registered as a guest or from the pool. Doesn't touch the team's saved roster or any other match.
@@ -1753,6 +1782,15 @@ function FixPlayerScreen({ match, teams, fixIdentitySlot, renamePlayerInMatch, g
           ))}
         </div>
       </div>
+
+      {renamingTeam && (
+        <Modal title="Team name" onClose={() => setRenamingTeam(null)}>
+          <Field label="Name for this match">
+            <TextInput value={renameText} onChange={(e) => setRenameText(e.target.value)} placeholder="Team name" />
+          </Field>
+          <Btn className="w-full" disabled={!renameText.trim()} onClick={() => { renameTeamInMatch(match.id, renamingTeam.id, renameText.trim()); setRenamingTeam(null); }}>Save</Btn>
+        </Modal>
+      )}
 
       {renamingPlayer && (
         <Modal title="Rename Player" onClose={() => setRenamingPlayer(null)}>
@@ -2603,7 +2641,7 @@ function TournamentsScreen({ teams, tournaments, setTournaments, matches, delete
 
   if (open) {
     const standings = open.teamIds.map((tid) => {
-      const t = teams.find((x) => x.id === tid);
+      const t = { name: teamLabel(tid, teams, matches), color: teams.find((x) => x.id === tid)?.color };
       const relevant = matches.filter((m) => m.tournamentId === open.id && m.status === "completed" && (m.teamAId === tid || m.teamBId === tid));
       let won = 0, lost = 0, tied = 0;
       relevant.forEach((m) => {
@@ -2645,7 +2683,7 @@ function TournamentsScreen({ teams, tournaments, setTournaments, matches, delete
               <div key={m.id} className="flex items-center gap-2">
                 <button onClick={() => { if (m.status === "completed") { go("summary"); go.setMatch(m.id); } else { go("live"); go.setMatch(m.id); } }}
                   className="flex-1 text-left p-3 rounded-lg stamp-btn" style={{ background: C.paper, border: `1.5px solid ${C.line}` }}>
-                  <div className="f-ui text-sm" style={{ color: C.ink }}>{teams.find(t=>t.id===m.teamAId)?.name} vs {teams.find(t=>t.id===m.teamBId)?.name}</div>
+                  <div className="f-ui text-sm" style={{ color: C.ink }}>{teamLabel(m.teamAId, teams, matches)} vs {teamLabel(m.teamBId, teams, matches)}</div>
                   <div className="f-ui text-xs mt-0.5" style={{ color: m.status === "live" ? C.ball : C.inkSoft }}>{m.status === "live" ? "● Live now" : m.result?.text}</div>
                 </button>
                 {deleteMatch && <button onClick={() => setConfirmDeleteMatchId(m.id)} className="p-2"><X size={14} style={{ color: C.inkSoft }} /></button>}
@@ -2730,7 +2768,7 @@ function WeeklyScreen({ teams, matches, startScheduledMatch, deleteMatch, isScor
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const weekly = matches.filter((m) => m.weekday).sort((a, b) => (a.matchDate || "") < (b.matchDate || "") ? 1 : -1);
-  const teamName = (id) => teams.find((t) => t.id === id)?.name || "Unknown";
+  const teamName = (id) => teamLabel(id, teams, matches);
   const fmtDate = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "";
 
   const tossMatch = matches.find((m) => m.id === tossPickId);
@@ -3903,7 +3941,7 @@ function SummaryScreen({ match, teams, deleteMatch, updateMatchWeeklyInfo, isAdm
   if (!match) return <div className="p-8 text-center f-ui" style={{ color: C.inkSoft }}>Match not found.</div>;
   const awards = match.status === "completed" ? computeMatchAwards(match, teams) : null;
   const moments = match.status === "completed" ? computeKeyMoments(match, teams) : [];
-  const teamOf = (id) => teams.find((t) => t.id === id)?.name || "";
+  const teamOf = (id) => resolveTeam(match, id, teams).name;
 
   const openWeeklyModal = () => {
     setWkDate(match.matchDate || match.createdAt || new Date().toISOString().slice(0, 10));
@@ -4401,6 +4439,28 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     });
   }, [matches, loaded, isScorer]);
 
+  // Make sure every started match carries its own copy of both teams (name,
+  // colour, roster) so deleting a team later can't blank out old fixtures.
+  // Runs quietly for scorers/admin whenever teams or matches load or change.
+  useEffect(() => {
+    if (!loaded || !isScorer || teams.length === 0) return;
+    const fill = (snap, teamId) => {
+      if (snap && snap.name) return snap;
+      const live = teams.find((t) => t.id === teamId);
+      if (!live) return snap;
+      return { id: live.id, name: live.name, color: live.color, players: snap ? snap.players : live.players.map((p) => ({ ...p })), keeperId: snap ? snap.keeperId : live.keeperId, captainId: snap ? (snap.captainId ?? live.captainId ?? null) : (live.captainId ?? null) };
+    };
+    let changedAny = false;
+    const next = matches.map((m) => {
+      if (m.status === "scheduled") return m;
+      const a = fill(m.teamASnapshot, m.teamAId), b = fill(m.teamBSnapshot, m.teamBId);
+      if (a === m.teamASnapshot && b === m.teamBSnapshot) return m;
+      changedAny = true;
+      return { ...m, teamASnapshot: a, teamBSnapshot: b };
+    });
+    if (changedAny) setMatches(next);
+  }, [matches, teams, loaded, isScorer]);
+
   // Viewers: quietly check for new scores every few seconds and update the
   // screen -- no refresh needed. Only a tiny timestamp is fetched unless
   // something actually changed.
@@ -4431,7 +4491,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
 
   const snapshotTeam = (teamId) => {
     const t = teams.find((tm) => tm.id === teamId);
-    return t ? { id: t.id, players: t.players.map((p) => ({ ...p })), keeperId: t.keeperId, captainId: t.captainId ?? null } : null;
+    return t ? { id: t.id, name: t.name, color: t.color, players: t.players.map((p) => ({ ...p })), keeperId: t.keeperId, captainId: t.captainId ?? null } : null;
   };
 
   const createMatch = ({ tournamentId, category, weekday, matchDate, venue, teamAId, teamBId, oversLimit, maxOversPerBowler, tossWinnerId, tossChoice }) => {
@@ -4681,6 +4741,19 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
     }));
   };
 
+  // For a team that was already deleted before names were saved: type its
+  // name back in for this one match (its players stay as they were).
+  const renameTeamInMatch = (matchId, teamId, newName) => {
+    setMatches((ms) => ms.map((m) => {
+      if (m.id !== matchId) return m;
+      const patch = (snap, tid) => {
+        if (tid !== teamId) return snap;
+        return snap ? { ...snap, name: newName } : { id: teamId, name: newName, color: "#999", players: [], keeperId: null, captainId: null };
+      };
+      return { ...m, teamASnapshot: patch(m.teamASnapshot, m.teamAId), teamBSnapshot: patch(m.teamBSnapshot, m.teamBId) };
+    }));
+  };
+
   const renamePlayerInMatch = (matchId, playerId, newName) => {
     setMatches((ms) => ms.map((m) => {
       if (m.id !== matchId) return m;
@@ -4691,7 +4764,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       const ensureSnapshot = (existing, teamId) => {
         if (existing) return existing;
         const live = teams.find((t) => t.id === teamId);
-        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId, captainId: live.captainId ?? null } : null;
+        return live ? { id: live.id, name: live.name, color: live.color, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId, captainId: live.captainId ?? null } : null;
       };
       const teamASnapshot = ensureSnapshot(m.teamASnapshot, m.teamAId);
       const teamBSnapshot = ensureSnapshot(m.teamBSnapshot, m.teamBId);
@@ -4717,7 +4790,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
         if (existing) return existing;
         if (tId !== teamId) return existing;
         const live = teams.find((t) => t.id === tId);
-        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId, captainId: live.captainId ?? null } : null;
+        return live ? { id: live.id, name: live.name, color: live.color, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId, captainId: live.captainId ?? null } : null;
       };
       const teamASnapshot = ensureSnapshot(m.teamASnapshot, m.teamAId);
       const teamBSnapshot = ensureSnapshot(m.teamBSnapshot, m.teamBId);
@@ -4769,7 +4842,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
       const ensureSnapshot = (existing, tId) => {
         if (existing) return existing;
         const live = teams.find((t) => t.id === tId);
-        return live ? { id: live.id, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId, captainId: live.captainId ?? null } : null;
+        return live ? { id: live.id, name: live.name, color: live.color, players: live.players.map((p) => ({ ...p })), keeperId: live.keeperId, captainId: live.captainId ?? null } : null;
       };
       const teamASnapshot = ensureSnapshot(m.teamASnapshot, m.teamAId);
       const teamBSnapshot = ensureSnapshot(m.teamBSnapshot, m.teamBId);
@@ -4811,7 +4884,7 @@ export default function CricketApp({ onLogout, userEmail, role, supabaseClient, 
         {screen === "live" && <LiveScreen match={currentMatch} teams={teams} playerPool={playerPool} appendEvent={appendEvent} setOpeners={setOpeners} setKeeperOverride={setKeeperOverride} undoLast={undoLast} replaceLastBall={isScorer ? replaceLastBall : null} undoIntoPreviousInnings={undoIntoPreviousInnings} continueIfInningsComplete={continueIfInningsComplete} deleteMatch={isAdmin ? deleteMatch : null} updateMatchOvers={isScorer ? updateMatchOvers : null} endMatchNow={isAdmin ? endMatchNow : null} addPlayerToMatchTeam={isScorer ? addPlayerToMatchTeam : null} swapPlayersBetweenTeams={isAdmin ? swapPlayersBetweenTeams : null} isAdmin={isAdmin} isScorer={isScorer} go={go} />}
         {screen === "summary" && <SummaryScreen match={currentMatch} teams={teams} deleteMatch={isAdmin ? deleteMatch : null} updateMatchWeeklyInfo={isScorer ? updateMatchWeeklyInfo : null} isAdmin={isAdmin} go={go} />}
         {screen === "editBalls" && isAdmin && <BallEditorScreen match={currentMatch} teams={teams} saveEditedMatch={saveEditedMatch} revertLastEdit={revertLastEdit} go={go} />}
-        {screen === "fixPlayer" && <FixPlayerScreen match={currentMatch} teams={teams} fixIdentitySlot={isAdmin ? fixIdentitySlot : () => {}} renamePlayerInMatch={isAdmin ? renamePlayerInMatch : () => {}} go={go} />}
+        {screen === "fixPlayer" && <FixPlayerScreen match={currentMatch} teams={teams} fixIdentitySlot={isAdmin ? fixIdentitySlot : () => {}} renamePlayerInMatch={isAdmin ? renamePlayerInMatch : () => {}} renameTeamInMatch={isAdmin ? renameTeamInMatch : () => {}} go={go} />}
         {screen === "mergePlayers" && isAdmin && <MergePlayersScreen playerPool={playerPool} teams={teams} matches={matches} mergePlayerNames={mergePlayerNames} go={go} />}
       </div>
     </div>
